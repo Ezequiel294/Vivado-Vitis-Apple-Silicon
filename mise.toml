@@ -1,0 +1,9 @@
+[tools]
+python = "3.12"
+
+[env]
+_.python.venv = { path = ".venv", create = true }
+
+[tasks.setup]
+description = "Install Python deps (PDF page rendering for class slides)"
+run = "pip install --upgrade pip && pip install pypdfium2 pillow"
