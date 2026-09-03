@@ -15,7 +15,7 @@ passthrough; Vivado/Vitis reach the board's JTAG over TCP (XVC) when needed.
 |---|---|
 | Vivado/Vitis install (~71GB) | Docker volume `xilinx-install` → `/opt/Xilinx` |
 | License + Vivado config | Docker volume `xilinx-config` → `~/.Xilinx` |
-| Coursework (projects, bitstreams, XDCs) | `…/TTU/Term 8/Computer Architecture/fpga-work` ↔ `~/fpga-work` in the container |
+| Coursework (projects, bitstreams, XDCs) | a folder you choose on the Mac ↔ `~/fpga-work` in the container |
 | AMD installer `.bin` | `./installer/` (read-only in container; deletable after install) |
 
 ---
@@ -47,8 +47,13 @@ docker run --rm --privileged --platform linux/arm64 ubuntu:22.04 \
 
 ## 2. Build and start the container
 
+First pick where coursework lives on your Mac (e.g. a `fpga-work` subfolder of
+your class folder), create it with `projects/`, `bitstreams/`, and
+`constraints/` inside, and put its **absolute path** in the
+`/CHANGE/ME/fpga-work` line of `docker-compose.yml`.
+
 ```sh
-cd ~/Containers/vivado-vitis
+cd <path to this repo>
 docker compose build
 docker compose up -d
 /opt/X11/bin/xhost +localhost        # allow the container to draw on XQuartz
@@ -135,7 +140,7 @@ https://github.com/Digilent/digilent-xdc). Copy and uncomment pins per project;
 
 ```sh
 open -a Docker; open -a XQuartz
-cd ~/Containers/vivado-vitis && docker compose up -d
+cd <path to this repo> && docker compose up -d
 /opt/X11/bin/xhost +localhost              # once per XQuartz start
 ```
 
@@ -150,8 +155,8 @@ docker exec -d vivado bash -lc 'source /opt/Xilinx/2026.1/Vitis/settings64.sh  &
 ```
 
 First GUI start takes a minute or two (emulation). Work in
-`~/fpga-work/projects/<name>` — those files appear in the Proton Drive class
-folder on the Mac. Follow the class slides for the GUI flow (RTL project → add
+`~/fpga-work/projects/<name>` — those files appear in your coursework folder
+on the Mac. Follow the class slides for the GUI flow (RTL project → add
 sources → add XDC → target board → synth → impl → bitstream), and put final
 `.bit` files in `~/fpga-work/bitstreams/` so they're easy to find from macOS.
 
@@ -163,7 +168,7 @@ openFPGALoader -b arty_s7_25  <path to .bit>             # Arty S7-25
 openFPGALoader -b arty_a7_100t <path to .bit>            # Arty A7-100T
 ```
 
-The `.bit` path is the `fpga-work/bitstreams/...` file in the class folder.
+The `.bit` path is the `fpga-work/bitstreams/...` file in your coursework folder.
 
 ### Program/debug — path B (XVC: Hardware Manager & Vitis)
 
@@ -234,9 +239,10 @@ make sure no other program (screen, another bridge) holds the FTDI port.
 the Mac (`openFPGALoader -b <board> --xvc`) *with the board connected*, and the
 URL must be exactly `host.docker.internal:2542`.
 
-**Proton Drive makes "Edit conflict" copies during builds** — Vivado writes its
-build tree fast enough to race the sync. Harmless for generated files (delete
-the copies), but for long builds consider pausing Proton Drive sync, or keep
+**Cloud sync (Proton Drive, iCloud, …) makes "Edit conflict" copies during
+builds** — if your coursework folder is inside a synced directory, Vivado
+writes its build tree fast enough to race the sync. Harmless for generated
+files (delete the copies), but for long builds consider pausing sync, or keep
 heavy scratch projects outside `fpga-work` and copy results in.
 
 **Wiping and starting over** — `docker compose down`, then

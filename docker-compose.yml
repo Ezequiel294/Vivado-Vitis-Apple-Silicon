@@ -27,8 +27,10 @@ services:
       - xilinx-config:/home/user/.Xilinx
       # AMD unified installer .bin goes here (read-only in container)
       - ./installer:/installer:ro
-      # Coursework: subdirectory of the Proton Drive class folder
-      - "/Users/ezequiel/Library/CloudStorage/ProtonDrive-ezequielbuckmartinez@proton.me-folder/TTU/Term 8/Computer Architecture/fpga-work:/home/user/fpga-work"
+      # Coursework folder on your Mac (EDIT THIS: absolute path to a
+      # directory you own, e.g. a subfolder of your class folder).
+      # Create it before the first `docker compose up`.
+      - "/CHANGE/ME/fpga-work:/home/user/fpga-work"
 
     # Vivado's Java UI needs more shared memory than Docker's 64MB default
     shm_size: 2gb
