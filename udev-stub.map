@@ -1,0 +1,8 @@
+/* Export all stub symbols under libudev's version tag so binaries
+ * linked against the real libudev.so.1 (versioned refs) still load. */
+LIBUDEV_183 {
+    global:
+        udev_*;
+    local:
+        *;
+};

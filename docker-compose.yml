@@ -1,0 +1,41 @@
+services:
+  vivado:
+    build: .
+    image: vivado-vitis-env
+    platform: linux/amd64
+    container_name: vivado
+
+    # ── License identity ──────────────────────────────────────────────
+    # The node-locked Vivado license is bound to Host Name + NIC MAC.
+    # NEVER change these two values after generating the license, or
+    # Vivado will refuse to run until a new license is generated.
+    hostname: vivado-box
+    mac_address: "02:42:ac:11:00:02"
+
+    environment:
+      # X11 GUI shown by XQuartz on the Mac
+      DISPLAY: host.docker.internal:0
+      # udev stub — prevents the Rosetta crash in udev_enumerate_scan_devices()
+      LD_PRELOAD: /opt/stub/libudev-stub.so
+      # Java/Swing sizing workaround, harmless otherwise
+      _JAVA_AWT_WM_NONREPARENTING: "1"
+
+    volumes:
+      # Vivado/Vitis installation (~51GB) — survives container rebuilds
+      - xilinx-install:/opt/Xilinx
+      # License + Vivado user config — survives container rebuilds
+      - xilinx-config:/home/user/.Xilinx
+      # AMD unified installer .bin goes here (read-only in container)
+      - ./installer:/installer:ro
+      # Coursework: subdirectory of the Proton Drive class folder
+      - "/Users/ezequiel/Library/CloudStorage/ProtonDrive-ezequielbuckmartinez@proton.me-folder/TTU/Term 8/Computer Architecture/fpga-work:/home/user/fpga-work"
+
+    # Vivado's Java UI needs more shared memory than Docker's 64MB default
+    shm_size: 2gb
+
+    stdin_open: true
+    tty: true
+
+volumes:
+  xilinx-install:
+  xilinx-config:
