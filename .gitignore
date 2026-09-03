@@ -1,0 +1,8 @@
+# Python venv managed by mise
+.venv/
+
+# AMD installer binary (~400MB, re-downloadable from xilinx.com)
+installer/*.bin
+
+# Local Claude Code settings
+.claude/settings.local.json
