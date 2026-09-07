@@ -38,19 +38,19 @@
 
 - [x] 7.1 Create the Unit 2 example project in `fpga-work/projects/` (Example1.v + the board's XDC), run synthesis, implementation, and bitstream generation inside the container, and verify a `.bit` is produced and copied to `fpga-work/bitstreams/`
 - [x] 7.2 Verify the Vivado project files are visible from Finder in the Proton Drive subdirectory (bind-mount round-trip)
-- [ ] 7.3 With the Arty board on USB, program the bitstream from macOS with `openFPGALoader -b <board>` and verify the LED/switch behavior from the slides — this is the baseline programming path working end to end
+- [x] 7.3 With the Arty board on USB, program the bitstream from macOS with `openFPGALoader -b <board>` and verify the LED/switch behavior from the slides — this is the baseline programming path working end to end
 
 ## 8. XVC path (Hardware Manager + Vitis readiness)
 
-- [ ] 8.1 Start `openFPGALoader --xvc` on the host, open the target from Vivado Hardware Manager inside the container via `open_hw_target -xvc_url host.docker.internal:2542`, and verify the device is detected and programmable from Hardware Manager
-- [ ] 8.2 Verify the serial console: run a design/demo with UART output and confirm `screen /dev/tty.usbserial-* 115200` on macOS shows it
+- [x] 8.1 Start `openFPGALoader --xvc` on the host, open the target from Vivado Hardware Manager inside the container via `open_hw_target -xvc_url host.docker.internal:2542`, and verify the device is detected and programmable from Hardware Manager
+- [x] 8.2 Verify the serial console: run a design/demo with UART output and confirm `screen /dev/tty.usbserial-* 115200` on macOS shows it
 
 ## 9. Vitis validation (the unverified risk — do early once Units require it)
 
 - [x] 9.1 Build a minimal MicroBlaze (or class-provided) hardware platform in Vivado, export XSA, create a Vitis hello-world, and verify it compiles inside the container
-- [ ] 9.2 Run the hello-world on the board through the XVC bridge from Vitis ("Run on Hardware") and verify its output on the macOS serial console; if Vitis fails under Rosetta, record the failure mode and escalate the Windows-ARM-VM fallback decision to the user
+- [x] 9.2 Run the hello-world on the board through the XVC bridge from Vitis ("Run on Hardware") and verify its output on the macOS serial console; if Vitis fails under Rosetta, record the failure mode and escalate the Windows-ARM-VM fallback decision to the user
 
 ## 10. Documentation
 
 - [x] 10.1 Write `README.md` covering prerequisites, one-time setup (container, XQuartz, GUI install selections, license flow, board files), and verify it matches what was actually done in tasks 1–6 (commands copy-pasteable)
-- [ ] 10.2 Add the daily-workflow section (start/stop, file locations, synth→bitstream→program via both paths, Vitis run/debug, serial console) plus troubleshooting notes (XQuartz refusing connections, XVC bridge down, board undetected, Proton Drive sync churn) and verify a dry-run session succeeds using only README commands
+- [x] 10.2 Add the daily-workflow section (start/stop, file locations, synth→bitstream→program via both paths, Vitis run/debug, serial console) plus troubleshooting notes (XQuartz refusing connections, XVC bridge down, board undetected, Proton Drive sync churn) and verify a dry-run session succeeds using only README commands
