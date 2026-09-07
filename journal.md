@@ -237,11 +237,141 @@ work — the project's biggest open risk).
 
 ---
 
+# Hardware day (2026-09-07) — board arrived, and it's an A7
+
+## 13. "openFPGALoader isn't working" — no, the bitstream was for the wrong FPGA
+
+**Symptom:** loading `example1-arty-s7-25.bit` with `-b arty_a7_100t`
+"succeeded" (`Load SRAM ... Done`) but the status readout showed
+`ID Error: ID error` and `Done: 0`, and nothing ran.
+
+**Root cause:** the board that arrived is an **Arty A7-100T** (xc7a100t,
+IDCODE `0x3631093`), not the Arty S7-25 all the scripts targeted. The FPGA
+rejects a bitstream whose embedded part IDCODE doesn't match — that whole
+register dump *is* the board answering correctly over JTAG.
+
+**Correct fix:** rebuild for the A7: part `xc7a100tcsg324-1`, board_part
+`digilentinc.com:arty-a7-100:part0:1.1`, the A7 master XDC pins, and a
+100MHz (not 12MHz) single-ended `sys_clock`. A7 variants now live alongside
+the S7 ones: `example1/build-a7.tcl`, `mb-hello/build-hw-a7.tcl`,
+`mb-hello/make-vitis-a7.py`, `constraints/Arty-A7-100-Master-example1.xdc`.
+Recognize the signature: **`ID Error` + `Done 0` = wrong-part bitstream, not
+a cable/driver problem.**
+
+## 14. MicroBlaze never ran: held in reset by a dangling `ext_reset_in`
+
+**Symptom:** mb-hello bitstream programmed fine (DONE=1) but no UART output,
+and xsdb said `Cannot stop MicroBlaze. MicroBlaze is not being clocked`
+(misleading — see below).
+
+**Diagnosis that worked** (after ruling out reset-button polarity, pin
+placement, XVC, and the serial path): a diagnostic bitstream wired three
+status signals to LEDs — `clk_wiz.locked` (LD4), a counter heartbeat on the
+MB clock (LD5), and `proc_sys_reset.mb_reset` (LD6). Result: LD4 on, LD5
+blinking, **LD6 solid on** → clock fine, CPU permanently in reset.
+
+**Root cause:** our script applied the board `reset` automation only to the
+clocking wizard's reset pin. `proc_sys_reset/ext_reset_in` was left
+unconnected — and since its polarity expects the active-low button, the tied
+default reads as *asserted*, so `mb_reset` never deasserts. Compile-only
+validation (and Vitis builds) can never catch this; it only shows on
+hardware. (The xsdb "not being clocked" message was a red herring here — see
+issue 15: it appears over the XVC bridge even when the CPU runs fine.)
+
+**Correct fix:** also apply the board reset automation to
+`ext_reset_in` (now in both `build-hw.tcl` and `build-hw-a7.tcl`, with a
+guard that errors if the pin ends up unconnected). After the fix the
+hello-world prints on the serial port and the red RESET button restarts it.
+
+## 15. MicroBlaze debug over openFPGALoader's XVC does NOT work — bake the ELF into the bitstream instead
+
+The hoped-for flow — xsdb in the container downloading/running ELFs through
+the XVC bridge (`connect -xvc-url`, `targets`, `dow`, `con`) — **fails**:
+every MDM debug operation (`stop`, `dow`) errors with `Cannot stop
+MicroBlaze. MicroBlaze is not being clocked`, even when the CPU is
+*provably running* (heartbeat LED + serial output) and with the bridge
+slowed to 1MHz. Chain enumeration and `fpga -f` programming over the same
+bridge work every time, so it's specifically openFPGALoader v1.1.1's XVC
+server mishandling the longer BSCAN/USER2 debug transactions (AWS saw
+similar MDM-over-XVC trouble: aws/aws-fpga#641). Don't trust that error
+message — check a heartbeat/reset LED before chasing clocking bugs.
+
+Notes on what *does* work with xsdb over the bridge (xsct is disabled in
+2026.1, xsdb is not; `vitis -s` Python has no run/debug calls at all):
+
+```tcl
+connect -xvc-url tcp:host.docker.internal:2542
+targets -set -filter {name =~ "xc7a*"}
+fpga -f <bitstream>          # programming: reliable
+# stop / dow / con           # debug ops: broken through this bridge
+```
+
+**The working run-on-hardware path** is `updatemem`: bake the ELF into BRAM
+so the program runs at power-on, no debugger involved:
+
+```sh
+updatemem -meminfo <impl>/system_wrapper.mmi -data hello.elf \
+  -bit <impl>/system_wrapper.bit -proc system_i/microblaze_0 -out boot.bit
+```
+
+Program `boot.bit` from macOS with openFPGALoader (or `fpga -f` via xsdb)
+and press the board's RESET button to re-run. This covers everything the
+course needs (run software on the soft CPU + serial I/O); what's lost is
+only interactive breakpoint debugging from the Vitis GUI. Upgrading
+openFPGALoader was considered and skipped — no upstream fix exists for
+this. If interactive debug ever becomes a hard requirement, the options are
+a different XVC server implementation or the Windows-ARM-VM fallback.
+
+## 16. Smaller hardware-day snags
+
+- **openFPGALoader's XVC default port is 3721, not 2542** — pass
+  `--port 2542` (or use 3721 in the `-xvc_url`). Also the XVC server quits
+  when stdin hits EOF, so backgrounded it needs stdin held open
+  (`sleep 999999 | openFPGALoader ... --xvc --port 2542`).
+- **Vivado Hardware Manager over openFPGALoader's XVC is flaky**: the first
+  `open_hw_target -xvc_url` worked, later ones failed with
+  `No devices detected` even after killing stale in-container
+  `hw_server`/`cs_server` processes (which do linger after xsdb/Vivado exits
+  and must be pkill'd by their unwrapped names). **xsdb over the same bridge
+  was reliable every time** — prefer it for programming/running.
+- **AXI Uartlite instantiated by automation defaults to 9600 baud**, not
+  115200. Either read the serial console at 9600 or set
+  `CONFIG.C_BAUDRATE {115200}` on the uartlite cell before building.
+- **The FT2232 drops UART bytes while its JTAG channel is busy** — output
+  printed during/right after programming arrives truncated. Press the RESET
+  button (with `ext_reset_in` wired) to re-run the program and get clean
+  output, or just expect the first line to be mangled after `fpga -f`.
+- The macOS serial device has two channels: `…88820` is JTAG (channel A),
+  `…88821` is the UART (channel B) — use the `1` suffix with
+  `screen`/`cat`.
+- **`screen` on `/dev/tty.usbserial-*` exits by itself after ~5 seconds** —
+  the `tty.` devices wait for a carrier signal. Use the **`/dev/cu.*`**
+  variant, which opens immediately and stays.
+- **Power-cycling the board wipes the design** (SRAM configuration) and the
+  FPGA boots Digilent's **factory demo from QSPI flash**, which prints on
+  the UART at **115200** — read at 9600 that's pure junk bytes. Looks like a
+  serial problem; it's just the wrong design running. Reprogram the
+  bitstream after every power-up (the `PROG` button also reverts to the
+  factory demo).
+- A pure-Verilog UART blaster (`projects/uart-test/`) that spams `U` at 9600
+  on D10 proved the Mac-side serial path independently of the CPU — a handy
+  divide-and-conquer tool to keep around.
+
+---
+
 ## End state (for whoever reads this cold)
 
 Image/container fully reproduce all fixes from the repo (`Dockerfile`,
 `udev-stub.c`, `udev-stub.map`, `docker-compose.yml`) — verified by a full
 rebuild + recreate after which license checkout, a Verilog bitstream build
-(`example1`), and a Vitis MicroBlaze hello-world compile all pass. Remaining
-unverified: anything requiring the physical Arty board (openFPGALoader
-programming, XVC/Hardware Manager, serial console, Vitis run-on-hardware).
+(`example1`), and a Vitis MicroBlaze hello-world compile all pass.
+
+Hardware verified on the Arty A7-100T (2026-09-07): openFPGALoader
+programming from macOS (example1 switches/LEDs work), XVC bridge +
+in-container programming (xsdb `fpga -f`, Hardware Manager once), MicroBlaze
+hello-world printing on the macOS serial console at 9600 baud (verified live
+in `screen`, restarted via the RESET button). The one thing that does not
+work: interactive MicroBlaze debug through the XVC bridge (issue 15) — GUI
+and CLI alike — so `updatemem` boot-bitstreams are the standard software
+flow. The S7-25 scripts carry the same `ext_reset_in` fix but remain
+hardware-untested.
