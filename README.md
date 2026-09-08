@@ -48,8 +48,8 @@ docker run --rm --privileged --platform linux/arm64 ubuntu:22.04 \
 ## 2. Build and start the container
 
 First pick where coursework lives on your Mac (e.g. a `fpga-work` subfolder of
-your class folder), create it with `projects/`, `bitstreams/`, and
-`constraints/` inside, and put its **absolute path** in the
+your class folder), create it with `projects/`, `bitstreams/`, `constraints/`,
+`tests/` and `tools/` inside, and put its **absolute path** in the
 `/CHANGE/ME/fpga-work` line of `docker-compose.yml`.
 
 ```sh
@@ -129,9 +129,10 @@ docker cp /tmp/vivado-boards-master/new/board_files/arty-s7-25  vivado:/opt/Xili
 
 Master XDC constraint files live in `fpga-work/constraints/`
 (`Arty-A7-100-Master.xdc`, `Arty-S7-25-Master.xdc`, from
-https://github.com/Digilent/digilent-xdc). Copy and uncomment pins per project;
-`Arty-A7-100-Master-example1.xdc` / `Arty-S7-25-Master-example1.xdc` are the
-Unit 2 variants (switches + LEDs).
+https://github.com/Digilent/digilent-xdc). Copy and uncomment pins per project.
+For ready-made A7 examples see the `.xdc` files under `fpga-work/tests/` —
+`01-leds/leds.xdc` (switches + LEDs) and `04-serial-input/uart_echo.xdc`
+(clock + UART + LEDs).
 
 ## 6. Board basics (Arty A7-100T)
 
@@ -347,12 +348,26 @@ clean line.
 
 ### Batch builds (optional, no GUI)
 
-`fpga-work/projects/example1/build.tcl` (Unit 2 LED/switch design) and
-`fpga-work/projects/mb-hello/build-hw.tcl` (MicroBlaze + UART platform → XSA)
-are working references:
+Every test in `fpga-work/tests/` is a worked reference you can copy from —
+`01-leds/build.tcl` for a plain Verilog design, `03-mb-hello/build-hw.tcl`
+for a MicroBlaze platform, `07-ila-vio/build.tcl` for debug cores:
 
 ```sh
-docker exec vivado bash -lc 'source /opt/Xilinx/2026.1/Vivado/settings64.sh && cd ~/fpga-work/projects/example1 && vivado -mode batch -source build.tcl'
+docker exec -w /home/user/fpga-work/tests/01-leds vivado bash -lc \
+  'source /opt/Xilinx/2026.1/Vivado/settings64.sh && vivado -mode batch -source build.tcl'
+```
+
+### The test suite
+
+`fpga-work/tests/` holds eight tests covering everything this environment can
+do, each with its own README saying what it proves and how to check it. Run
+`tests/run-all.sh`, or see `tests/README.md` for the status table. Use it to
+confirm the environment after any change, and as a source of working examples.
+
+### Software loop for your own MicroBlaze projects
+
+```sh
+fpga-work/tools/run-sw.sh -d projects/<yours>      # rebuild ELF → bake → flash
 ```
 
 ---
