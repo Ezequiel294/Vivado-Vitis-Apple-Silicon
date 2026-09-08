@@ -6,3 +6,6 @@ installer/*.bin
 
 # Local Claude Code settings
 .claude/settings.local.json
+
+# Working handoff note — current state and next steps, not a deliverable
+handoff.md
