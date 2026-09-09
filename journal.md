@@ -2,8 +2,12 @@
 
 Chronological record of every problem encountered getting Vivado/Vitis 2026.1
 running in Docker on the MacBook Air M5, what was tried, and what the actual
-fix was. Written 2026-09-03, at the point where everything works except the
-board-in-hand steps (board not yet available).
+fix was. Entries are dated as they happened and are **not** revised
+afterwards — later entries correct earlier ones. Three phases so far:
+§1–12 building the environment (2026-09-03), §13–16 the day the board arrived
+(2026-09-07), §17–19 the day the test suite first ran (2026-09-08).
+
+For the current state of what works, read `README.md` §7 — not this file.
 
 ---
 
@@ -357,21 +361,199 @@ a different XVC server implementation or the Windows-ARM-VM fallback.
   on D10 proved the Mac-side serial path independently of the CPU — a handy
   divide-and-conquer tool to keep around.
 
+
+# Test-suite day (2026-09-08)
+
+## 17. The entire test suite was unrunnable: Proton Drive "dataless" files return EIO inside the container
+
+**Symptom:** `tests/02-simulation/run.sh` — the smallest, fastest test in the
+suite, documented as "under a minute" — ran for **9 minutes** and had to be
+interrupted. `ps` inside the container showed it had never got past the first
+of its three steps:
+
+```
+/opt/Xilinx/2026.1/Vivado/bin/unwrapped/lnx64.o/xvlog src/adder4.v sim/adder4_tb.v
+   99.9% CPU, 11:22 elapsed, state R
+```
+
+`xvlog` is only the Verilog *parser*; `xelab` and `xsim` never started. It
+left `xvlog.log` and `xvlog.pb` behind at **0 bytes** — opened, never written.
+
+**Diagnosis that worked:** three reads, in this order.
+
+1. `xvlog` on a trivial module in the container's **own** filesystem
+   (`/tmp`): **2 seconds**. So the tool and Rosetta are fine.
+2. Copying the real sources from the mount into `/tmp` to try them there:
+
+   ```
+   cp: error reading '/home/user/fpga-work/tests/02-simulation/src/adder4.v':
+       Input/output error
+   ```
+
+   The container cannot *read* the file, while macOS reads it fine.
+3. Counting local blocks vs. apparent size across the tree
+   (`du -k` = 0 but `stat -f%z` > 0) found **27 of 43 files dataless** —
+   including nearly every `run.sh`, `build.tcl`, and `.v`/`.c` source in the
+   suite. The survivors were exactly the files that had been `cat`ed on the
+   host earlier in the session.
+
+**Root cause:** `fpga-work` lives in
+`~/Library/CloudStorage/ProtonDrive-…`. Proton Drive's File Provider evicts
+file *contents* while leaving the directory entries and sizes intact
+(`com.apple.decmpfs` xattr, zero local blocks). macOS materializes such a file
+on demand when something reads it — but the container reads through Docker's
+bind mount, and that path does **not** trigger materialization. It returns
+`EIO` instead. Vivado's `xvlog` responds to a read error by spinning on a core
+indefinitely rather than exiting, which is what turned an unreadable 848-byte
+file into a 9-minute silent hang.
+
+Note the shape of this failure: `ls` looks perfect, `stat` reports the right
+size, the host can `cat` everything, and the file is genuinely there. Only the
+container sees it as broken, and only for files the cloud has evicted — which
+is why it hits whichever tests you happen not to have opened recently, and
+looks like a slow or flaky toolchain rather than a storage problem.
+
+**Fix that worked (immediate):** force materialization by reading every file
+from the **macOS side**, which is the side that honours on-demand download:
+
+```sh
+cd "…/fpga-work" && find . -type f -exec cat {} + > /dev/null
+```
+
+43/43 materialized, 43/43 then readable from inside the container, and
+`02-simulation` passed in **11 seconds** — same script, same sources, nothing
+else changed.
+
+**Fix worth making permanent:** this will recur every time Proton Drive
+decides to reclaim space. Either pin the folder ("Keep available offline") or,
+better, move `fpga-work` out of `CloudStorage` onto local disk and sync/back
+it up by another route. The existing README warning about cloud sync only
+mentions *"Edit conflict"* duplicate files during builds — a cosmetic problem.
+This one is not cosmetic: it makes builds hang with no error message.
+
+**Recognize it by:** a Vivado tool pinned at ~100% CPU making no progress,
+0-byte `.log`/`.pb` files next to it, and `Input/output error` when you try to
+`cp` the input file inside the container while it reads fine on the Mac.
+
 ---
 
-## End state (for whoever reads this cold)
+## 18. Two tests could never have passed — never-run scripts with latent bugs
 
-Image/container fully reproduce all fixes from the repo (`Dockerfile`,
-`udev-stub.c`, `udev-stub.map`, `docker-compose.yml`) — verified by a full
-rebuild + recreate after which license checkout, a Verilog bitstream build
-(`example1`), and a Vitis MicroBlaze hello-world compile all pass.
+Both were written 2026-09-07 and had never been executed. Neither failure was
+environmental; both were bugs in the test scaffolding itself.
 
-Hardware verified on the Arty A7-100T (2026-09-07): openFPGALoader
-programming from macOS (example1 switches/LEDs work), XVC bridge +
-in-container programming (xsdb `fpga -f`, Hardware Manager once), MicroBlaze
-hello-world printing on the macOS serial console at 9600 baud (verified live
-in `screen`, restarted via the RESET button). The one thing that does not
-work: interactive MicroBlaze debug through the XVC bridge (issue 15) — GUI
-and CLI alike — so `updatemem` boot-bitstreams are the standard software
-flow. The S7-25 scripts carry the same `ext_reset_in` fix but remain
+**Test 03 (`make-app.py`) — deleted a file its own build still referenced.**
+The Vitis `hello_world` template pins its source list in
+`vitis/hello/src/UserConfig.cmake`:
+
+```cmake
+set(USER_COMPILE_SOURCES
+"helloworld.c"
+)
+```
+
+The script removed `helloworld.c`, copied in our `main.c`, and left the list
+untouched, so CMake configure died with `Cannot find source file:
+helloworld.c` followed by `No SOURCES given to target: hello.elf`. Worse, the
+real message was hidden — Vitis runs its configure with `> /dev/null` and only
+surfaces `CMake Configuration for the Application Failed`. Fix: repoint
+`USER_COMPILE_SOURCES` at `main.c` after copying it in.
+
+**Test 06 (`debug-test.tcl`) — an ambiguous target filter.**
+`targets -set -filter {name =~ "MicroBlaze*"}` matches *two* entries on this
+chain:
+
+```
+2  MicroBlaze Debug Module at USER2
+3  MicroBlaze #0 (No clock)
+```
+
+so xsdb aborted with `more than one targets found`, the three debug
+operations never ran, and the script printed the misleading
+`SUMMARY: the MicroBlaze target does not even enumerate` — when in fact both
+targets enumerate perfectly well. Fix: filter on `"MicroBlaze #*"` to select
+only the CPU.
+
+The lesson worth keeping: a test that has never been run is not evidence of
+anything, and a *regression* test that has never been run is actively
+dangerous — test 06 would have reported "the MDM doesn't enumerate", sending
+the next person after a hardware fault that does not exist.
+
+Once the filter was fixed, test 06 reproduced the documented failure exactly
+(openFPGALoader v1.1.1): `stop` and `dow` both fail with `Cannot stop
+MicroBlaze. MicroBlaze is not being clocked`, and `con` fails with **`Already
+running`** — in the same session. That pair is the neatest proof yet that the
+"not being clocked" message is simply false.
+
+---
+
+## 19. ILA and VIO DO work over the XVC bridge (the open question, answered)
+
+Test 07's outcome was genuinely unknown. It works — both cores, fully.
+
+**ILA:** 1024 samples captured, the 32-bit counter incrementing by exactly one
+per sample with no gaps or corruption (`8b1d1644` → `8b1d1a43`; last minus
+first = `0x3FF` over 1024 samples).
+
+**VIO:** read `probe_in0` as `0000`, then `1001` after the switches were
+physically flipped, while the ILA's independent switch probe agreed (`sw` went
+`0` → `9`). Driving `probe_out0` to `101` lit LD4 and LD6 as predicted.
+
+This narrows issue 15 considerably. The bridge is not bad at on-chip debug in
+general — it carries ILA capture uploads and VIO probe traffic reliably. It is
+specifically **MDM** transactions that fail. For coursework this is the good
+outcome: "add an ILA and capture the bus" is fully supported.
+
+### Two things that made it work
+
+**Retry `open_hw_target`.** The first attempt frequently fails with
+`No devices detected on target localhost:3121/xilinx_tcf/Xilinx/host.docker.internal:2542`
+*even though the bridge log shows `connection accepted`*. A retry loop
+(4 attempts, `refresh_hw_server` between) made it reliable. Combined with
+clearing stale `hw_server`/`cs_server` first, this is the whole fix for the
+"Hardware Manager is flaky" reputation in issue 16.
+
+**Lowering the JTAG clock was NOT needed.** The first success used
+`--freq 1000000`, so that looked like the remedy — but a control run at the
+default 10MHz *with the retry loop* succeeded on attempt 1. Retrying is the
+fix; the frequency change was a coincidence. (Recorded because it would have
+been easy, and wrong, to write down "use 1MHz for ILA".)
+
+### None of this needs the GUI
+
+`tests/07-ila-vio/ila-check.tcl` drives both cores from batch Tcl and dumps
+the capture with `write_hw_ila_data -force -csv_file`, which is how the
+numbers above were checked by machine rather than by eye. Useful for
+regression runs, and useful when the GUI is painful under emulation.
+
+Two API details that cost time:
+- VIO probes are named in the `.ltx` after **the nets they are wired to**
+  (`sw_IBUF`, `vio_led`), *not* the IP port names, so `get_hw_probes
+  probe_in0` silently matches nothing and `set_property` then fails with
+  `expects at least one object`.
+- `DIRECTION` is not a valid property on a `hw_probe`, so probes cannot be
+  classified that way.
+
+---
+
+## End state (as of 2026-09-08)
+
+The image and container reproduce every fix above from files in the repo
+(`Dockerfile`, `udev-stub.c`, `udev-stub.map`, `docker-compose.yml`) —
+verified by a full rebuild + recreate, after which license checkout, a Verilog
+bitstream build, and a Vitis MicroBlaze compile all still pass.
+
+Verified on the Arty A7-100T by the test suite (`tests/README.md`, tests
+01–07): bitstream build and programming from macOS, programming from inside
+the container over XVC, simulation, a MicroBlaze running C and printing at
+9600 baud, serial input reaching the FPGA, and ILA/VIO on-chip debug.
+
+Two things are not settled. **Interactive MicroBlaze debug does not work**
+through the XVC bridge (§15, §18) — GUI and CLI alike — so `updatemem`
+boot-bitstreams are the standard software flow; the cheapest untried fix is a
+newer openFPGALoader than Homebrew's v1.1.1. And **flash boot (test 08) has
+never been run**, because it writes persistent flash and needs a jumper fitted
+by hand.
+
+The S7-25 scripts carry the same `ext_reset_in` fix but remain
 hardware-untested.
