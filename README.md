@@ -1,9 +1,10 @@
 # Vivado/Vitis 2026.1 on Apple Silicon (Docker + Rosetta)
 
 x86-64 Linux container that runs AMD **Vivado/Vitis 2026.1** on an Apple Silicon
-Mac for CS3375 (Computer Architecture, TTU), targeting the **Arty S7-25** /
-**Arty A7-100T** boards. Everything is defined by files in this repo — no
-third-party images.
+Mac for CS3375 (Computer Architecture, TTU). Everything is defined by files in
+this repo — no third-party images. Verified end to end on an **Arty A7-100T**;
+the **Arty S7-25** is supported by the same setup but has never been tested on
+hardware.
 
 **How it works:** a thin Ubuntu 22.04 (amd64) image runs under Docker Desktop's
 Rosetta emulation. Vivado/Vitis is installed once, via its normal GUI installer,
@@ -16,6 +17,7 @@ passthrough; Vivado/Vitis reach the board's JTAG over TCP (XVC) when needed.
 | Vivado/Vitis install (~71GB) | Docker volume `xilinx-install` → `/opt/Xilinx` |
 | License + Vivado config | Docker volume `xilinx-config` → `~/.Xilinx` |
 | Coursework (projects, bitstreams, XDCs) | a folder you choose on the Mac ↔ `~/fpga-work` in the container |
+| Test suite (8 tests) + helper scripts | `./tests/` and `./tools/` in this repo — **copy both into your `fpga-work` folder to run them** |
 | AMD installer `.bin` | `./installer/` (read-only in container; deletable after install) |
 
 ---
@@ -51,6 +53,11 @@ First pick where coursework lives on your Mac (e.g. a `fpga-work` subfolder of
 your class folder), create it with `projects/`, `bitstreams/`, `constraints/`,
 `tests/` and `tools/` inside, and put its **absolute path** in the
 `/CHANGE/ME/fpga-work` line of `docker-compose.yml`.
+
+For `tests/` and `tools/`, copy this repo's `./tests` and `./tools`
+directories into that folder rather than creating them empty — see
+[The test suite](#the-test-suite) below. They have to live under the mounted
+folder to work.
 
 ```sh
 cd <path to this repo>
@@ -145,14 +152,12 @@ Facts that save real debugging time:
   into FPGA SRAM and is **lost at power-off**. After every unplug/power-up,
   reprogram your bitstream. (Persisting a design to the board's QSPI flash is
   possible but not needed for the class.)
-- **At power-up the board runs Digilent's factory demo** from flash. It
-  chats on the UART at 115200 — if your serial console is at 9600 you'll see
-  junk bytes. That junk means "factory demo", not "broken board".
+- **At power-up the board runs Digilent's factory demo** from flash, chatting
+  on the UART at 115200. Junk bytes on a 9600 console mean "factory demo",
+  not "broken board".
 - **Two serial devices appear on the Mac** for the one board:
-  `/dev/cu.usbserial-XXXX0` is JTAG (leave it alone) and
-  `/dev/cu.usbserial-XXXX1` is the UART console. Use the **`cu.`** devices —
-  `screen` on the `tty.` variants exits after a few seconds (it waits for a
-  carrier signal that never comes).
+  `/dev/cu.usbserial-XXXX0` is JTAG (leave it alone), `...XXXX1` is the UART
+  console (see [Serial console](#serial-console)).
 - **Buttons**: `PROG` makes the FPGA reload from flash (i.e. back to the
   factory demo — you'll have to reprogram). The red `RESET` is routed into
   our MicroBlaze designs and **restarts the running program** — handy to
@@ -164,26 +169,35 @@ Facts that save real debugging time:
 - Wrong-board bitstreams are rejected quietly: `ID Error` + `Done 0` in the
   openFPGALoader status output means the `.bit` was built for another part.
 
-## 7. What works, what doesn't (verified on hardware 2026-09-07)
+## 7. What works, what doesn't
+
+*Verified on hardware 2026-09-07; whole test suite run 2026-09-08.*
 
 | Flow | Status |
 |---|---|
 | Verilog design → bitstream → program from macOS (path A) → LEDs/switches | ✅ works |
+| Simulation (xsim testbenches, VCD waveforms) | ✅ works |
 | Programming from *inside* the container over the XVC bridge (xsdb `fpga -f`) | ✅ works |
-| Vivado Hardware Manager over XVC | ⚠️ works but flaky — retry/fall back to xsdb |
+| Vivado Hardware Manager over XVC | ⚠️ works, but `open_hw_target` often fails the first time — retry it |
+| **ILA / VIO on-chip debug over XVC** | ✅ **works** (verified 2026-09-08) — waveform capture and live probes |
 | Vitis builds (platform + app, `vitis -s` Python API) | ✅ works |
 | Running software on the MicroBlaze via `updatemem` boot-bitstream | ✅ works — the standard flow |
-| Serial console from macOS (`screen`, 9600) | ✅ works |
+| Serial console from macOS (`screen`, 9600) | ✅ works, both directions — output *and* typed input |
 | RESET button re-running the soft-CPU program | ✅ works |
 | **Interactive debug of the MicroBlaze** (breakpoints, step, `dow`/`con`, Vitis GUI "Run/Debug on Hardware") | ❌ **does not work** |
+| Booting a design from the board's QSPI flash | ❓ never attempted (test 08 — writes flash, needs a jumper) |
 
-The one broken thing is a single root cause: openFPGALoader's XVC server
-mishandles the MDM debug transactions (journal §15). The Vitis **GUI** fails
-the same way as the command line — both sit on the identical
-`hw_server → XVC → MDM` path; there is no GUI-only trick around it. Debug
-workflow instead: `xil_printf` over the serial console + LEDs, and the RESET
-button to re-run. If breakpoint debugging ever becomes essential, the options
-are another XVC server implementation or a Windows-ARM VM with native tools.
+The one broken row has a single root cause: openFPGALoader's XVC server
+mishandles the MicroBlaze Debug Module's transactions (journal §15). The
+failure is narrow — **ILA and VIO work fine over the same bridge** (journal
+§19), so on-chip debug as a whole is available; only the CPU debug module
+fails. The Vitis GUI fails identically to the command line (same
+`hw_server → XVC → MDM` path), so there is no GUI-only workaround.
+
+Debug instead with `xil_printf` over the serial console, LEDs, and the RESET
+button to re-run — which is what `tools/run-sw.sh` is built around. If
+breakpoints ever become essential, the options are a different XVC server or a
+Windows-ARM VM with native cable drivers.
 
 ---
 
@@ -200,6 +214,15 @@ cd <path to this repo> && docker compose up -d
 Stop with `docker compose stop` (or `down`; both keep the installation,
 license, and coursework).
 
+⚠️ **If your coursework folder is in iCloud/Proton Drive/Dropbox**, force the
+files back onto local disk before a session — the container gets
+`Input/output error` on cloud-evicted placeholders and builds hang with no
+message (journal §17):
+
+```sh
+cd "/path/to/your/fpga-work" && find . -type f -exec cat {} + > /dev/null
+```
+
 ### Launch the tools
 
 ```sh
@@ -213,27 +236,33 @@ on the Mac. Follow the class slides for the GUI flow (RTL project → add
 sources → add XDC → target board → synth → impl → bitstream), and put final
 `.bit` files in `~/fpga-work/bitstreams/` so they're easy to find from macOS.
 
-### Program the board — path A (host, no container)
+### Program the board — path A (from macOS)
 
 ```sh
 openFPGALoader --detect                                  # board visible?
-openFPGALoader -b arty_s7_25  <path to .bit>             # Arty S7-25
 openFPGALoader -b arty_a7_100t <path to .bit>            # Arty A7-100T
+openFPGALoader -b arty_s7_25   <path to .bit>            # Arty S7-25
 ```
 
 The `.bit` path is the `fpga-work/bitstreams/...` file in your coursework folder.
 
-### Path B — the XVC bridge (JTAG over TCP): what it is and when to use it
+Path A is the default and covers the everyday loop. **Path B** below routes
+JTAG through the container instead, and is needed only for ILA/VIO and
+container-side tools. Neither path compiles anything — both just load a
+bitstream Vivado already produced:
 
-**XVC = Xilinx Virtual Cable**, a protocol that carries JTAG over a TCP
-socket. Instead of a physical cable plugged into the machine running the
-tool, the tool opens a socket and something on the other end wiggles the
-JTAG pins on its behalf.
+| Step | What it means | Who does it |
+|---|---|---|
+| **Compile** | Verilog / block design → `.bit` | **Vivado only**, always in the container |
+| **Program** | send an existing `.bit` to the FPGA over JTAG | openFPGALoader on the Mac (path A) **or** xsdb / Hardware Manager over XVC (path B) |
+| **Debug** | watch the design *while it runs* — ILA, VIO | Hardware Manager over XVC (path B only) |
 
-It exists here because **the container has no USB.** Docker on macOS can't
-pass through the board's FTDI chip, so Vivado inside the container has no
-way to reach the Arty by itself. openFPGALoader plays the part of the
-cable:
+### Path B — the XVC bridge (JTAG over TCP)
+
+The container has no USB: Docker on macOS can't pass the board's FTDI chip
+through, so Vivado inside the container cannot reach the Arty by itself.
+**XVC (Xilinx Virtual Cable)** closes that gap — openFPGALoader plays the part
+of the cable, serving JTAG over a TCP socket the container connects to.
 
 ```
 Vivado / xsdb / Vitis  --TCP:2542-->  openFPGALoader --xvc  --USB-->  Arty A7-100T
@@ -242,133 +271,146 @@ Vivado / xsdb / Vitis  --TCP:2542-->  openFPGALoader --xvc  --USB-->  Arty A7-10
 
 `host.docker.internal` is how the container addresses your Mac.
 
-First, a distinction worth being clear about — three different steps, and
-each tool does exactly one of them:
+**Use it for on-chip debug — ILA and VIO.** That's the real reason it exists.
+An ILA records internal signals into on-chip memory and Hardware Manager reads
+them back as waveforms; a VIO gives you virtual switches and LEDs for a
+running design. openFPGALoader alone can do neither — it only pushes
+bitstreams. The bridge also lets you program from inside the container
+(Hardware Manager, or xsdb `fpga -f`) and inspect the scan chain.
 
-| Step | Meaning | Who does it |
-|---|---|---|
-| **Compile** | Synthesis → implementation → generate a `.bit` from your Verilog/block design | **Vivado only** (GUI or batch Tcl), always in the container |
-| **Program** | Send an already-built `.bit` to the FPGA over JTAG | openFPGALoader (path A) **or** xsdb `fpga -f` / Hardware Manager over XVC (path B) |
-| **Debug** | Talk to the design *while it runs* — ILA waveforms, VIO, CPU breakpoints | Hardware Manager / Vitis, over XVC only |
+**Skip it for everything else.** Compiling never touches the board, and the
+everyday loop — edit Verilog, build, load the `.bit`, look at the LEDs — is
+simpler over path A.
 
-openFPGALoader never compiles anything, and neither does `fpga -f`; both
-take a filename because they load a bitstream Vivado already produced. Path
-A and path B are the same operation by different routes.
+**It cannot do MicroBlaze breakpoint debugging** or Vitis "Run on Hardware"
+(§7). Use the boot-bitstream flow below instead.
 
-**Use cases for the bridge:**
+Three rules that save time:
 
-1. **On-chip debug — ILA and VIO. This is the real reason XVC exists.** An
-   Integrated Logic Analyzer instantiated in your design records internal
-   signals to on-chip memory; Hardware Manager reads them back over JTAG
-   and draws waveforms. VIO gives you virtual buttons/LEDs to drive a
-   running design from the GUI. openFPGALoader cannot do any of this — it
-   only pushes bitstreams. If a lab says "add an ILA and capture the bus,"
-   the bridge is the only path.
-2. **Software debug on the MicroBlaze** — Vitis downloading an ELF,
-   breakpoints, stepping. ❌ **Broken in this setup** (see the limitation
-   note below); use the `updatemem` boot-bitstream flow instead.
-3. **Programming from inside the container** — Hardware Manager's "Program
-   Device", or xsdb `fpga -f`. Works, but redundant with path A; only worth
-   it when you're already in the GUI and don't want to switch terminals.
-4. **Scan-chain inspection** — confirming the device enumerates as
-   `xc7a100t_0`, reading DONE status. Mostly diagnostic.
+- **`--port 2542` is required.** openFPGALoader's XVC default is 3721; Xilinx
+  tools expect 2542.
+- **The bridge is single-client.** One of Hardware Manager *or* xsdb at a
+  time, path A can't be used while it runs, and `screen` must be closed.
+- **Retry `open_hw_target`.** The first attempt often fails with "No devices
+  detected" even though the bridge logged the connection; a retry usually
+  works. If it keeps failing, clear stale servers:
+  `docker exec vivado pkill -x hw_server`.
 
-**When to skip it:** the everyday loop — edit Verilog, build in Vivado,
-load the `.bit`, look at the LEDs — never needs XVC. Compile in the
-container, program from the Mac with path A. Reach for the bridge only for
-ILA/VIO, or when testing the Vitis hardware flow.
+#### Using it (two terminals)
 
-The bridge is **single-client**: only one of Hardware Manager *or* xsdb can
-hold it at a time, and neither can be connected while you use path A.
-
-#### Using the bridge
-
-It takes **two terminals**:
-
-**Terminal 1 (Mac): start the bridge and leave it running.** This is the
-"virtual cable" — the container connects to it. `--port` is required
-(openFPGALoader's XVC default is 3721, but our tools expect 2542):
+**Terminal 1 (Mac)** — start the bridge and leave it running:
 
 ```sh
 openFPGALoader -b arty_a7_100t --xvc --port 2542         # Ctrl-C quits
 ```
 
-**Terminal 2: open the xsdb console inside the container** (xsdb is the
-JTAG tool that ships with Vitis; 2026.1 disabled xsct but xsdb works):
+**Terminal 2** — xsdb inside the container (xsdb is the JTAG console that
+ships with Vitis; 2026.1 disabled xsct, but xsdb works):
 
 ```sh
 docker exec -it vivado bash -lc 'source /opt/Xilinx/2026.1/Vitis/settings64.sh && xsdb'
 ```
 
-You now have an `xsdb%` prompt. Type these **at that prompt**, one at a
-time:
+At the `xsdb%` prompt, one line at a time:
 
 ```tcl
 connect -xvc-url tcp:host.docker.internal:2542    ;# reach the bridge on the Mac
-targets                                           ;# list what's on the JTAG chain
+targets                                           ;# list the scan chain
 targets -set -filter {name =~ "xc7a*"}            ;# select the FPGA
 fpga -f ~/fpga-work/bitstreams/<file>.bit         ;# program it
 exit
 ```
 
-`targets` should list the `xc7a100t` (and, for MicroBlaze designs, the MDM
-and CPU). If `connect` fails, the bridge in terminal 1 isn't running or
-died — restart it.
+`targets` should list `xc7a100t` (plus the MDM and CPU for MicroBlaze
+designs). If `connect` fails, the bridge in terminal 1 isn't running.
 
-**Known limitation:** MicroBlaze *debug* operations (`stop`, `dow`, `con`,
-breakpoints — i.e. Vitis "Run/Debug on Hardware") do **not** work through
-openFPGALoader's XVC server; they fail with a bogus "MicroBlaze is not
-being clocked" even when the CPU is running fine (see journal §15). Vivado
-Hardware Manager over the bridge is also flaky ("No devices detected" —
-fall back to xsdb).
+In the GUI: Hardware Manager → Open Target → Open New Target → Local server.
+`tests/07-ila-vio/ila-check.tcl` does the same job headlessly from batch Tcl,
+including dumping an ILA capture to CSV.
 
-**To run software on the MicroBlaze, bake the ELF into the bitstream**
-(this is the standard flow for this setup — runs at power-on, RESET button
-re-runs it):
+### Run your C on the MicroBlaze
+
+Vitis "Run on Hardware" does not work here (§7), so the ELF is **baked into
+the bitstream** instead. The program then starts at power-on, and the RESET
+button re-runs it.
+
+`tools/run-sw.sh` is the everyday loop — rebuild the ELF in Vitis, bake it in
+with `updatemem`, program the board:
+
+```sh
+fpga-work/tools/run-sw.sh -d projects/<yours>      # rebuild ELF → bake → flash
+fpga-work/tools/run-sw.sh -d tests/03-mb-hello     # the worked example
+fpga-work/tools/run-sw.sh --help                   # all the flags
+```
+
+It expects the app's Vitis build tree (`vitis/<app>/build`) to exist already,
+created once by a script like `tests/03-mb-hello/make-app.py`. It copies
+`<dir>/src/main.c` over the app's source, so the app must list `main.c` in its
+`USER_COMPILE_SOURCES` — otherwise CMake keeps compiling the Vitis template's
+`helloworld.c` and your edits are silently ignored (journal §18).
+
+The underlying command, to run by hand:
 
 ```sh
 updatemem -meminfo <impl_dir>/system_wrapper.mmi -data hello.elf \
   -bit <impl_dir>/system_wrapper.bit -proc system_i/microblaze_0 -out boot.bit
 ```
 
-### Serial console (UART from the soft CPU)
+Debug with `xil_printf` over the serial console, plus LEDs.
+
+### Serial console
 
 ```sh
 screen /dev/cu.usbserial-*1 9600           # exit: Ctrl-A then K, then y
 ```
 
-Use the **`cu.`** device (the `tty.` variant exits after a few seconds) and
-the `1`-suffixed one (channel B = UART; channel A is JTAG). The
-automation-created AXI Uartlite defaults to **9600 baud** (set
-`CONFIG.C_BAUDRATE {115200}` on it before building if you want faster).
-Junk bytes = a baud mismatch — usually the factory demo (115200) after a
-power-up. Output printed while JTAG is busy programming can arrive
-truncated — press the board's RESET button to re-run the program and get a
-clean line.
+- Use the **`cu.`** device — `screen` on the `tty.` variant exits after a few
+  seconds, waiting for a carrier that never comes.
+- Use the **`1`**-suffixed device — channel B is the UART, channel A is JTAG.
+- **9600 baud** is the AXI Uartlite automation default (set
+  `CONFIG.C_BAUDRATE {115200}` on the IP before building for faster). Junk
+  characters mean a baud mismatch — usually the 115200 factory demo after a
+  power-up.
+- Output printed while JTAG is programming can arrive truncated; press RESET
+  for a clean run.
 
-### Batch builds (optional, no GUI)
-
-Every test in `fpga-work/tests/` is a worked reference you can copy from —
-`01-leds/build.tcl` for a plain Verilog design, `03-mb-hello/build-hw.tcl`
-for a MicroBlaze platform, `07-ila-vio/build.tcl` for debug cores:
+### Batch builds (no GUI)
 
 ```sh
 docker exec -w /home/user/fpga-work/tests/01-leds vivado bash -lc \
   'source /opt/Xilinx/2026.1/Vivado/settings64.sh && vivado -mode batch -source build.tcl'
 ```
 
+Every test in `fpga-work/tests/` is a worked reference to copy from:
+`01-leds/build.tcl` (plain Verilog), `03-mb-hello/build-hw.tcl` (a MicroBlaze
+block design), `07-ila-vio/build.tcl` (debug cores).
+
 ### The test suite
 
-`fpga-work/tests/` holds eight tests covering everything this environment can
-do, each with its own README saying what it proves and how to check it. Run
-`tests/run-all.sh`, or see `tests/README.md` for the status table. Use it to
-confirm the environment after any change, and as a source of working examples.
+Eight tests covering everything this environment can do, each with a README
+saying what it proves and how to check it. Use them to verify the environment
+after any change, and as working examples.
 
-### Software loop for your own MicroBlaze projects
+> **⚠️ Copy `tests/` and `tools/` into your coursework folder first — they do
+> not run from this repo.**
+>
+> ```sh
+> cp -R tests tools "/path/to/your/fpga-work/"   # the path from docker-compose.yml
+> cd "/path/to/your/fpga-work/tests" && ./run-all.sh
+> ```
+>
+> Only `fpga-work` is bind-mounted, so the container cannot see this repo at
+> all. `tests/common/lib.sh` derives container paths by stripping the
+> `fpga-work` root off host paths; run from anywhere else and every
+> `docker exec` targets a path that does not exist. Copy **both** directories —
+> `tools/run-sw.sh` sources `../tests/common/lib.sh`.
 
-```sh
-fpga-work/tools/run-sw.sh -d projects/<yours>      # rebuild ELF → bake → flash
-```
+Status as of 2026-09-08: **01–07 pass, 08 (flash boot) not yet run.** Details
+and per-test pass criteria are in `tests/README.md`.
+
+The copy here is **sources only** — build outputs (`vivado/`, `vitis/`,
+`.bit`, `.xsa`, `.ltx`, logs) are gitignored, so a fresh copy rebuilds from
+scratch. Test 03 takes 20+ minutes the first time; the rest are minutes.
 
 ---
 
@@ -413,14 +455,23 @@ and `Done 0`** — the bitstream was built for the wrong FPGA (e.g. an S7-25
 **MicroBlaze design is dead / xsdb says "MicroBlaze is not being clocked"** —
 that message also appears when the CPU is merely *held in reset*. Make sure
 `proc_sys_reset/ext_reset_in` is connected to the board reset (see
-`build-hw-a7.tcl`); a dangling `ext_reset_in` holds the CPU in reset forever
+`tests/03-mb-hello/build-hw.tcl`, which errors out if it is left dangling); a
+dangling `ext_reset_in` holds the CPU in reset forever
 while the clock is actually fine.
 
-**Cloud sync (Proton Drive, iCloud, …) makes "Edit conflict" copies during
-builds** — if your coursework folder is inside a synced directory, Vivado
-writes its build tree fast enough to race the sync. Harmless for generated
-files (delete the copies), but for long builds consider pausing sync, or keep
-heavy scratch projects outside `fpga-work` and copy results in.
+**A Vivado tool sits at 100% CPU forever with no output, next to 0-byte
+`.log` files** — cloud storage has evicted your sources to placeholders. macOS
+downloads those on demand, but Docker's bind mount does not: the container
+gets `Input/output error` while the same file reads fine on the Mac, and tools
+like `xvlog` spin instead of erroring. Re-read everything from the macOS side
+to force it back down (`cd "…/fpga-work" && find . -type f -exec cat {} + >
+/dev/null`), or better, move `fpga-work` off cloud storage onto local disk.
+Full write-up in journal §17.
+
+**Cloud sync makes "Edit conflict" copies during builds** — Vivado writes its
+build tree faster than the sync can follow. Cosmetic for generated files
+(delete the copies); for long builds, pause sync or keep heavy scratch
+projects outside `fpga-work`.
 
 **Wiping and starting over** — `docker compose down`, then
 `docker volume rm vivado-vitis_xilinx-install vivado-vitis_xilinx-config`
