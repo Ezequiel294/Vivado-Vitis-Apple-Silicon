@@ -9,3 +9,20 @@ installer/*.bin
 
 # Working handoff note — current state and next steps, not a deliverable
 handoff.md
+
+# Vivado/Vitis build output from running tests/ in place. The tests are meant
+# to be copied into your fpga-work folder (see README "The test suite"), but
+# ignore the artifacts here too so an in-repo run can never be committed.
+tests/**/vivado/
+tests/**/vitis/
+tests/**/xsim.dir/
+tests/**/.Xil/
+tests/**/*.bit
+tests/**/*.xsa
+tests/**/*.ltx
+tests/**/*.csv
+tests/**/*.log
+tests/**/*.jou
+tests/**/*.pb
+tests/**/*.wdb
+tests/**/*.vcd
