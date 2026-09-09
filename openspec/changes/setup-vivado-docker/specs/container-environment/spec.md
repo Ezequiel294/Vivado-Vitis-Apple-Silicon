@@ -36,6 +36,14 @@ The container SHALL present a fixed hostname and a fixed MAC address on every ru
 - **WHEN** the container is destroyed and recreated
 - **THEN** `hostname` and the NIC MAC address inside the container are identical to the values the license was generated against, and Vivado's License Manager reports a valid license without re-registration
 
+### Requirement: The simulator runs under emulation
+
+Vivado's simulator (xsim) SHALL compile, elaborate and run Verilog testbenches inside the container and SHALL produce waveform output, so that designs can be verified without the board attached.
+
+#### Scenario: Self-checking testbench in batch mode
+- **WHEN** a testbench is run through `xvlog`/`xelab`/`xsim` in batch mode inside the container
+- **THEN** the simulation runs to completion, the testbench's own pass/fail verdict appears on stdout, and a waveform file is written that can be opened in the Vivado GUI
+
 ### Requirement: Coursework files are stored in the class directory
 
 Project sources and build outputs the user works on SHALL be read and written through a bind mount to a dedicated subdirectory of the class folder `/Users/ezequiel/Library/CloudStorage/ProtonDrive-ezequielbuckmartinez@proton.me-folder/TTU/Term 8/Computer Architecture`, so coursework is visible in Finder/Proton Drive and is never mixed with the syllabus and slides in the class-folder root.
@@ -43,3 +51,7 @@ Project sources and build outputs the user works on SHALL be read and written th
 #### Scenario: Files visible on both sides
 - **WHEN** a Vivado project is created inside the container in the coursework directory
 - **THEN** its files appear under the class folder's dedicated subdirectory on macOS, and files placed there from macOS are visible inside the container
+
+#### Scenario: Files must be materialized locally
+- **WHEN** the coursework directory is inside a cloud-synced folder that has evicted files to on-demand placeholders
+- **THEN** reads through the bind mount fail with `Input/output error` even though macOS reads the same files successfully, so the files MUST be materialized from the macOS side (or the directory kept on local disk) before the toolchain is used

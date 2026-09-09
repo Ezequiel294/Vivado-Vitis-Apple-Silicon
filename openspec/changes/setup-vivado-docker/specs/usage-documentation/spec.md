@@ -14,7 +14,7 @@ The repository SHALL contain a `README.md` that lists everything to install on m
 
 ### Requirement: README documents the daily workflow
 
-The `README.md` SHALL document the recurring usage loop: starting/stopping the environment, where coursework files live on the Mac and in the container, synthesizing and generating a bitstream, programming the board (both the host-direct path and the XVC path), running/debugging a Vitis program on the soft CPU, and opening the serial console. Known failure modes (XQuartz not accepting connections, XVC bridge not running, board not detected) SHALL each have a short troubleshooting note.
+The `README.md` SHALL document the recurring usage loop: starting/stopping the environment, where coursework files live on the Mac and in the container, synthesizing and generating a bitstream, programming the board (both the host-direct path and the XVC path), running a compiled program on the soft CPU via the `updatemem` boot-bitstream flow, and opening the serial console. Capabilities that do not work (Vitis "Run/Debug on Hardware") SHALL be documented as such rather than omitted. Known failure modes (XQuartz not accepting connections, XVC bridge not running, board not detected) SHALL each have a short troubleshooting note.
 
 #### Scenario: Routine session
 - **WHEN** the user returns to coursework after a break and follows the README's usage section
@@ -23,3 +23,15 @@ The `README.md` SHALL document the recurring usage loop: starting/stopping the e
 #### Scenario: Common failure lookup
 - **WHEN** the GUI fails to appear or the board is not detected
 - **THEN** the README's troubleshooting section names the symptom and gives the checking/fixing command
+
+### Requirement: A runnable test suite verifies the environment
+
+The repository SHALL ship a test suite that exercises each capability of the environment on real hardware, with a README per test stating what it proves, how to run it, its pass criteria and its failure modes. The documentation SHALL state that the suite must be copied into the mounted coursework directory before it will run, since the container cannot see the repository.
+
+#### Scenario: Verifying the environment after a change
+- **WHEN** the image, the toolchain, or the host-side bridge tooling changes and the user runs the suite
+- **THEN** each test reports a pass or a failure with a machine-checkable signal where one exists, and any test whose result can only be judged by eye says so rather than reporting a pass on the strength of a successful build
+
+#### Scenario: A known limitation stays visible
+- **WHEN** a capability is known not to work in this environment
+- **THEN** a regression test reproduces the documented failure, and that test reports the limitation *disappearing* as the result that requires the documentation to be updated

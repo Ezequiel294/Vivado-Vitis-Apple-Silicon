@@ -20,7 +20,7 @@ See `proposal.md` — Why. Constraints that shape the approach:
 
 **Non-Goals:**
 - Automating the Vivado installation (deliberately manual/GUI to mirror the class and keep transparency).
-- ILA/ChipScope debugging (works over XVC if ever needed, but not validated in this change).
+- ILA/ChipScope debugging (assumed to work over XVC if ever needed, but not planned for validation in this change — it was in fact validated later; see Outcomes).
 - Windows VM fallback (documented as an option in exploration; only pursued if Vitis proves broken under Rosetta).
 - Supporting Intel Macs or Linux hosts.
 
@@ -45,8 +45,8 @@ See `proposal.md` — Why. Constraints that shape the approach:
 
 8. **Board access, two paths:**
    - *Baseline:* `openFPGALoader -b arty_s7_25` / `-b arty_a7_100t` on macOS against `.bit` files in `fpga-work/bitstreams/`. Zero container involvement.
-   - *Full:* `openFPGALoader --xvc` as host-side JTAG bridge on port 2542; inside the container, `open_hw_target -xvc_url host.docker.internal:2542` (Vivado) and the equivalent hw_server/XSCT setup for Vitis "Run on Hardware". Needed once the course reaches Vitis software units. No compose `ports:` entry — the connection is outbound from the container.
-   - *Serial:* `screen /dev/tty.usbserial-* 115200` on macOS (documented; no extra software).
+   - *Full:* `openFPGALoader --xvc` as host-side JTAG bridge on port 2542; inside the container, `open_hw_target -xvc_url host.docker.internal:2542` (Vivado) and the equivalent hw_server setup for Vitis "Run on Hardware". Needed once the course reaches Vitis software units. No compose `ports:` entry — the connection is outbound from the container. *(Two corrections from implementation: XSCT was removed in 2026.1 — `xsdb` and the `vitis -s` Python API replace it — and "Run on Hardware" does not work over this bridge at all; see Outcomes.)*
+   - *Serial:* `screen /dev/cu.usbserial-*1 9600` on macOS (documented; no extra software). *(Planned as `tty.`/115200; both were wrong — the `tty.` device waits for a carrier and exits, and the AXI UartLite automation defaults to 9600. 115200 is the QSPI factory demo.)*
 
 9. **Install both Artix-7 and Spartan-7 device support** even though the user's board is initially one of them — pairing with an A7-100T partner is expected mid-course.
 
@@ -67,3 +67,58 @@ Greenfield — nothing to migrate. Rollback = `docker compose down`, delete name
 
 - Exact `hw_server`/XSCT invocation Vitis 2026.1 wants for an XVC-only target (determined during the Vitis validation task; does not change the architecture).
 - Whether Proton Drive offers per-folder sync exclusion (affects only the mitigation wording in the README).
+
+## Outcomes (2026-09-08)
+
+How the risks and open questions above actually resolved, once the board was
+in hand and the `tests/` suite had been run end to end. Recorded here so the
+design doc is not read as a prediction that was never checked.
+
+**Risk: Vitis 2026.1 under Rosetta is unverified** → *Vitis builds fine*
+(platform + application, via the `vitis -s` Python API; XSCT is gone in 2026.1).
+Only *running* from Vitis fails, and for an unrelated reason — see the next
+item. The Windows-ARM-VM fallback was **not** taken.
+
+**Risk: openFPGALoader XVC + hw_server interop for Vitis ELF download** →
+*This is the one thing that broke.* Every MicroBlaze Debug Module operation
+(`stop`, `dow`, `con`) fails with `Cannot stop MicroBlaze. MicroBlaze is not
+being clocked` while the CPU is provably running — openFPGALoader v1.1.1's XVC
+server mishandles the longer BSCAN/USER2 shifts the MDM needs. Bitstream
+programming and device enumeration over the same bridge are unaffected. The
+mitigation is not a different bridge but a different mechanism: `updatemem`
+bakes the ELF into the bitstream, so the program runs from power-on with no MDM
+traffic at all. Breakpoint debugging is given up; `xil_printf` over serial plus
+LEDs replaces it. Kept under test as a regression (test 06, inverted exit
+codes) so a fixed openFPGALoader would be noticed. Journal §15, §18.
+
+**Non-goal that became a validated capability: ILA/VIO.** Listed above as out
+of scope, but it was the biggest open question once MDM debug failed, so it was
+tested. **Both work over the same bridge** — 1024 ILA samples captured cleanly,
+VIO reading switches live and driving LEDs (journal §19, test 07). This is what
+keeps the MDM limitation tolerable: on-chip debug as a whole is available; only
+the CPU debug module is unreachable.
+
+**Risk: Proton Drive sync churn during builds** → Worse than anticipated. The
+predicted problem (duplicate "Edit conflict" files) is cosmetic. The real one
+is *file eviction*: macOS turns synced files into dataless placeholders and
+materializes them on demand, but a read through Docker's bind mount does not
+trigger that — the container gets `EIO` while the Mac reads the same file
+fine, and `xvlog` spins on a core indefinitely instead of erroring. Mitigation
+documented (re-read from the macOS side before a session); the real fix is to
+move `fpga-work` off cloud storage. Journal §17.
+
+**Open question: the exact hw_server/XSCT invocation Vitis wants for an
+XVC-only target** → Moot. XSCT no longer exists in 2026.1, and the flow it
+would have served does not work over this bridge. `xsdb` handles the operations
+that do work (`connect -xvc-url`, `targets`, `fpga -f`).
+
+**Open question: whether Proton Drive offers per-folder sync exclusion** → Not
+pursued; superseded by the eviction problem above, for which the recommendation
+is to move the folder off cloud storage entirely rather than tune the sync.
+
+**Out of scope, not validated:** flash boot. A test for it (08) ships with the
+suite, but the course does not require booting without a computer attached, and
+the test writes persistent QSPI flash and needs the JP1 jumper fitted by hand —
+so it is not a deliverable of this change. Validating it would be its own
+change. The Arty S7-25 is likewise unverified on hardware; its scripts carry
+the same fixes as the A7 ones.
