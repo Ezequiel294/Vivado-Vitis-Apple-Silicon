@@ -82,9 +82,14 @@ xsdb_batch() {
 #   bake_elf <impl_dir> <app.elf> <out.bit>
 bake_elf() {
     local impl=$1 elf=$2 out=$3
-    local bit="$impl/system_wrapper.bit" mmi="$impl/system_wrapper.mmi"
-    [ -f "$bit" ] || die "no bitstream at $bit — build the hardware first"
-    [ -f "$mmi" ] || die "no $mmi — this design has no BRAM memory map, so there is nothing to bake an ELF into"
+    # Don't assume the wrapper is called system_wrapper: a block design made in
+    # the Vivado GUI is named after the design (design_1_wrapper, etc). Find
+    # the memory map, then take the matching bitstream.
+    local mmi bit
+    mmi=$(ls "$impl"/*.mmi 2>/dev/null | head -1)
+    [ -n "$mmi" ] || die "no .mmi in $impl — either the hardware isn't implemented yet, or this design has no MicroBlaze BRAM to bake an ELF into"
+    bit="${mmi%.mmi}.bit"
+    [ -f "$bit" ] || die "found $(basename "$mmi") but no matching $(basename "$bit") — generate the bitstream first"
     [ -f "$elf" ] || die "no ELF at $elf — build the application first"
     # Read the CPU instance out of the memory map instead of hardcoding it, so
     # this keeps working on designs with differently-named processors.
@@ -98,6 +103,32 @@ bake_elf() {
            -bit '$(in_container "$bit")' -proc '$proc' -out '$(in_container "$out")'"
     [ -f "$out" ] || die "updatemem did not produce $out"
     info "baked $(basename "$elf") into $(basename "$out")  (cpu: $proc)"
+}
+
+# Rebuild a Vitis application's generated build tree.
+# Vitis emits a CMake/Ninja tree, but settings64.sh puts neither cmake nor a
+# usable make on PATH: cmake lives under tps/ (matched by glob so a toolchain
+# version bump doesn't break this) and ninja ships in Vitis/bin. Plain `make`
+# cannot build this tree at all — the generator is Ninja, not Unix Makefiles.
+#   build_app <build_dir>
+build_app() {
+    local build
+    build=$(in_container "$1")
+    require_docker
+    docker exec "$CONTAINER" bash -lc '
+        source '"$XILINX"'/Vitis/settings64.sh
+        # The generated build calls mb-gcc by absolute path but mb-size and
+        # friends by bare name, and they live in two different trees that
+        # settings64.sh does not add to PATH.
+        export PATH='"$XILINX"'/Vitis/gnu/microblaze/lin/bin:'"$XILINX"'/gnu/microblaze/lin/bin:$PATH
+        CM=$(ls -d '"$XILINX"'/tps/lnx64/cmake-*/bin/cmake 2>/dev/null | head -1)
+        if [ -n "$CM" ]; then
+            exec "$CM" --build '"'$build'"'
+        elif command -v ninja >/dev/null 2>&1; then
+            exec ninja -C '"'$build'"'
+        else
+            echo "no cmake or ninja found in the Vitis install" >&2; exit 1
+        fi'
 }
 
 program() {

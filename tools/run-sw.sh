@@ -16,7 +16,7 @@
 #   ./tools/run-sw.sh -d … --no-program           # produce the .bit, don't touch the board
 #
 # Layout it expects inside the project directory:
-#   <dir>/vivado/*.runs/impl_1/system_wrapper.{bit,mmi}
+#   <dir>/**/*.runs/impl_1/<top>_wrapper.{bit,mmi}   (any wrapper name)
 #   <dir>/vitis/<app>/build/<app>.elf
 #   <dir>/src/main.c            (optional; copied over the app's source)
 #
@@ -48,7 +48,12 @@ case "$DIR" in /*) PROJ_DIR=$DIR ;; *) PROJ_DIR="$FPGA_WORK/$DIR" ;; esac
 [ -d "$PROJ_DIR" ] || die "no such directory: $PROJ_DIR"
 
 APP_DIR="$PROJ_DIR/$WORKSPACE/$APP"
-IMPL=$(echo "$PROJ_DIR/$VIVADO_PROJ"/*.runs/impl_1)
+
+# Find the implementation directory. Scripted builds put it under a `vivado/`
+# subdir; a project made in the Vivado GUI puts it at <name>.runs/impl_1
+# directly inside the project. Accept either without being told which.
+IMPL=$(find "$PROJ_DIR" -maxdepth 3 -type d -name impl_1 -path "*.runs/*" 2>/dev/null | head -1)
+[ -n "$IMPL" ] || die "no *.runs/impl_1 under $PROJ_DIR — has the bitstream been generated?"
 BOOT="$PROJ_DIR/$(basename "$PROJ_DIR")-boot.bit"
 
 # --- 1. rebuild the ELF --------------------------------------------------
@@ -56,10 +61,11 @@ if [ "$DO_BUILD" = 1 ]; then
     step "Building $APP"
     [ -d "$APP_DIR/build" ] || die "no build tree at $APP_DIR/build
 (first time? create the app with: vitis -s <your make-app.py>)"
-    [ -f "$PROJ_DIR/src/main.c" ] && cp "$PROJ_DIR/src/main.c" "$APP_DIR/src/main.c"
-    require_docker
-    docker exec "$CONTAINER" bash -lc \
-        "source $XILINX/Vitis/settings64.sh && cmake --build '$(in_container "$APP_DIR/build")'"
+    # Keep the app's source in sync with the project's canonical main.c.
+    if [ -f "$PROJ_DIR/src/main.c" ]; then
+        cp "$PROJ_DIR/src/main.c" "$APP_DIR/src/main.c"
+    fi
+    build_app "$APP_DIR/build"
 fi
 
 # --- 2. merge ------------------------------------------------------------

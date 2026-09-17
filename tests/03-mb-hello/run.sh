@@ -24,9 +24,7 @@ if [ ! -d "$APP" ]; then
 else
     step "Rebuilding the application"
     cp "$HERE/src/main.c" "$APP/src/main.c"
-    require_docker
-    docker exec "$CONTAINER" bash -lc \
-        "source $XILINX/Vitis/settings64.sh && cmake --build '$(in_container "$APP/build")'"
+    build_app "$APP/build"
 fi
 [ -f "$APP/build/hello.elf" ] || fail "03-mb-hello: no ELF produced"
 

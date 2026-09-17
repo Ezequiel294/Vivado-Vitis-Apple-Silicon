@@ -26,3 +26,6 @@ tests/**/*.jou
 tests/**/*.pb
 tests/**/*.wdb
 tests/**/*.vcd
+
+# macOS folder metadata
+.DS_Store
