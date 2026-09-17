@@ -5,7 +5,8 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# X11 client libs + GTK (installer and Vivado GUIs), fonts, locale,
+# X11 client libs + GTK (installer and Vivado GUIs), the Electron/Chromium
+# runtime libs the Vitis IDE needs (libgbm1 especially), fonts, locale,
 # libtinfo5 (required by Vivado, dropped in Ubuntu 24.04), build tools
 # for the udev stub, and general utilities.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -21,6 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libxcursor1 libxfixes3 libxft2 libfreetype6 \
         libgtk-3-0 libglib2.0-0 libcanberra-gtk3-module \
         libnss3 libnspr4 libasound2 \
+        libgbm1 libxshmfence1 libdrm2 \
         libyaml-0-2 \
         libsm6 libice6 libxinerama1 \
         fontconfig fonts-dejavu-core fonts-liberation \
