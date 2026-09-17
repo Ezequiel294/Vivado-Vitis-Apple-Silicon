@@ -87,7 +87,9 @@ slow hardware build and only recompiles the software.
 Machine-checkable:
 
 - `BUILD OK: …system_wrapper.xsa` from the Vivado step
-- `APP OK: …hello.elf` (first run) or a successful `cmake --build` (rebuilds)
+- `APP OK: …hello.elf` (first run) or a successful `build_app` rebuild — note
+  `cmake` is not on PATH after `settings64.sh`; `lib.sh` locates it under
+  `tps/` and adds the MicroBlaze toolchain dirs (journal §21)
 - `mb-hello-boot.bit` exists and **differs** from
   `vivado/mb_hello.runs/impl_1/system_wrapper.bit` — if `cmp` reports them
   identical, `updatemem` silently did nothing and the CPU will run an empty

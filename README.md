@@ -181,6 +181,7 @@ Facts that save real debugging time:
 | Vivado Hardware Manager over XVC | ⚠️ works, but `open_hw_target` often fails the first time — retry it |
 | **ILA / VIO on-chip debug over XVC** | ✅ **works** (verified 2026-09-08) — waveform capture and live probes |
 | Vitis builds (platform + app, `vitis -s` Python API) | ✅ works |
+| **Vitis IDE (the GUI)** | ❌ **does not start** — Electron/Chromium crashes under Rosetta |
 | Running software on the MicroBlaze via `updatemem` boot-bitstream | ✅ works — the standard flow |
 | Serial console from macOS (`screen`, 9600) | ✅ works, both directions — output *and* typed input |
 | RESET button re-running the soft-CPU program | ✅ works |
@@ -227,7 +228,8 @@ cd "/path/to/your/fpga-work" && find . -type f -exec cat {} + > /dev/null
 
 ```sh
 docker exec -d vivado bash -lc 'source /opt/Xilinx/2026.1/Vivado/settings64.sh && vivado'
-docker exec -d vivado bash -lc 'source /opt/Xilinx/2026.1/Vitis/settings64.sh  && vitis -w ~/fpga-work/projects/<name>/vitis'
+# Vitis has NO working GUI here (§7) — it is scripted instead:
+docker exec vivado bash -lc 'source /opt/Xilinx/2026.1/Vitis/settings64.sh && vitis -s <script>.py'
 ```
 
 First GUI start takes a minute or two (emulation). Work in
@@ -328,35 +330,79 @@ In the GUI: Hardware Manager → Open Target → Open New Target → Local serve
 `tests/07-ila-vio/ila-check.tcl` does the same job headlessly from batch Tcl,
 including dumping an ILA capture to CSV.
 
-### Run your C on the MicroBlaze
+### Write and run C on the MicroBlaze (the Vitis IDE replacement)
 
-Vitis "Run on Hardware" does not work here (§7), so the ELF is **baked into
-the bitstream** instead. The program then starts at power-on, and the RESET
-button re-runs it.
+**The Vitis IDE does not start here** — it is an Electron app and Chromium
+crashes under emulation (§7, journal §20). That costs you the editor, the
+project wizards and the build buttons. It does **not** cost you Vitis: the
+compiler, the BSP generator and the linker are separate command-line tools
+that work fine. Vivado's GUI is unaffected, so the class flow — design the
+hardware in Vivado, write C for it in Vitis — is intact. Only the C gets
+compiled by a script instead of a button.
 
-`tools/run-sw.sh` is the everyday loop — rebuild the ELF in Vitis, bake it in
-with `updatemem`, program the board:
+Two scripts replace the IDE. Both live in `fpga-work/tools/`:
+
+| Script | Replaces | When |
+|---|---|---|
+| `make-app.sh` | New Platform Project + New Application Project wizards | once per project |
+| `run-sw.sh` | the Build and Run buttons | every code change |
+
+#### 1. In Vivado (GUI, exactly as the class slides describe)
+
+Build the block design, **Generate Bitstream**, then:
+
+> **File → Export → Export Hardware… → tick "Include bitstream"**
+
+Save the `.xsa` into the project directory. This is the handoff from hardware
+to software, and forgetting it is the most common way to get stuck.
+
+#### 2. Create the platform and application (once per project)
 
 ```sh
-fpga-work/tools/run-sw.sh -d projects/<yours>      # rebuild ELF → bake → flash
-fpga-work/tools/run-sw.sh -d tests/03-mb-hello     # the worked example
-fpga-work/tools/run-sw.sh --help                   # all the flags
+cd ~/…/fpga-work
+./tools/make-app.sh -d projects/<yours>
 ```
 
-It expects the app's Vitis build tree (`vitis/<app>/build`) to exist already,
-created once by a script like `tests/03-mb-hello/make-app.py`. It copies
-`<dir>/src/main.c` over the app's source, so the app must list `main.c` in its
-`USER_COMPILE_SOURCES` — otherwise CMake keeps compiling the Vitis template's
-`helloworld.c` and your edits are silently ignored (journal §18).
+This builds the BSP — the drivers and headers generated for *your* block
+design, which is how `xil_printf()` knows how to reach your UART — then
+creates the app from the `hello_world` template. Several minutes.
 
-The underlying command, to run by hand:
+It also writes a starter `projects/<yours>/src/main.c`. **That is the file to
+edit**: `run-sw.sh` copies it over the app's source on every build, so edits
+made anywhere else are silently overwritten.
+
+Useful flags: `-a <name>` for a second app against the same platform
+(default `hello`), `-c <cpu>` if the processor is not `microblaze_0`,
+`--help` for the rest.
+
+#### 3. Edit, build, run (every change)
 
 ```sh
-updatemem -meminfo <impl_dir>/system_wrapper.mmi -data hello.elf \
-  -bit <impl_dir>/system_wrapper.bit -proc system_i/microblaze_0 -out boot.bit
+# edit projects/<yours>/src/main.c in any editor on the Mac
+./tools/run-sw.sh -d projects/<yours>
+screen /dev/cu.usbserial-*1 9600        # press RESET on the board
 ```
 
-Debug with `xil_printf` over the serial console, plus LEDs.
+`run-sw.sh` recompiles the C, bakes the ELF into the bitstream with
+`updatemem`, and programs the board. The baking step is needed because Vitis
+"Run on Hardware" cannot work over the XVC bridge (§7): a bitstream configures
+*hardware*, while your program lives in the CPU's BRAM, so the two are merged
+before download. The program then starts at power-on and the RESET button
+re-runs it.
+
+Both scripts find things rather than assuming names, so they work with
+GUI-made projects (`design_1_wrapper.bit`, `<Project>.runs/impl_1`) as well as
+the scripted tests (`system_wrapper.bit`, `vivado/…`).
+
+The underlying command, if you want to run it by hand:
+
+```sh
+updatemem -meminfo <impl>/<top>_wrapper.mmi -data <app>.elf \
+  -bit <impl>/<top>_wrapper.bit -proc <design>_i/microblaze_0 -out boot.bit
+```
+
+Debug with `xil_printf` over the serial console, plus LEDs — there is no
+breakpoint debugger (§7).
 
 ### Serial console
 
@@ -412,9 +458,41 @@ The copy here is **sources only** — build outputs (`vivado/`, `vitis/`,
 `.bit`, `.xsa`, `.ltx`, logs) are gitignored, so a fresh copy rebuilds from
 scratch. Test 03 takes 20+ minutes the first time; the rest are minutes.
 
+### Helper scripts (`tools/`)
+
+Copied to `fpga-work/tools/` by the same command above:
+
+| Script | What it is for |
+|---|---|
+| `make-app.sh` | create a Vitis platform + app for a project — replaces the IDE's wizards, run once per project |
+| `make-app.py` | the part that runs inside the container (invoked by `make-app.sh`, not directly) |
+| `run-sw.sh` | rebuild C → bake the ELF into the bitstream → program the board; the everyday loop |
+
+`--help` on either shell script prints its usage. Full workflow:
+[Write and run C on the MicroBlaze](#write-and-run-c-on-the-microblaze-the-vitis-ide-replacement).
+
+**After pulling repo updates, re-copy both directories** — the copies in
+`fpga-work/` are what actually run, and they do not update themselves:
+
+```sh
+cp -R tests tools "/path/to/your/fpga-work/"
+```
+
 ---
 
 ## Troubleshooting
+
+**`vitis -w …` opens nothing and exits 0** — expected: the Vitis IDE cannot
+run here (§7, journal §20). Its launcher backgrounds the real binary with
+output discarded, so the crash is invisible. Use the scripted flow instead:
+[Write and run C on the MicroBlaze](#write-and-run-c-on-the-microblaze-the-vitis-ide-replacement).
+
+**`cmake: command not found` when rebuilding an app** — `settings64.sh` does
+not put `cmake` on PATH; it ships under `tps/lnx64/cmake-*/bin/`. `make` is
+not a substitute (the generator is Ninja). Use `tools/run-sw.sh`, which
+handles this — or if you are building by hand, note that `mb-size` lives in
+`/opt/Xilinx/2026.1/gnu/microblaze/lin/bin` while `mb-gcc` is in
+`/opt/Xilinx/2026.1/Vitis/gnu/microblaze/lin/bin` (journal §21).
 
 **No window appears / "cannot open display"** — XQuartz must be running with
 network clients allowed, and `xhost +localhost` must have been run *since

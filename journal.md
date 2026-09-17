@@ -5,7 +5,9 @@ running in Docker on the MacBook Air M5, what was tried, and what the actual
 fix was. Entries are dated as they happened and are **not** revised
 afterwards — later entries correct earlier ones. Three phases so far:
 §1–12 building the environment (2026-09-03), §13–16 the day the board arrived
-(2026-09-07), §17–19 the day the test suite first ran (2026-09-08).
+(2026-09-07), §17–19 the day the test suite first ran (2026-09-08), and
+§20–21 the Vitis GUI and the scripted software loop that replaces it
+(2026-09-16).
 
 For the current state of what works, read `README.md` §7 — not this file.
 
@@ -557,3 +559,153 @@ by hand.
 
 The S7-25 scripts carry the same `ext_reset_in` fix but remain
 hardware-untested.
+
+## 20. The Vitis IDE (GUI) cannot run — Electron crashes under Rosetta
+
+**Symptom:** `vitis -w <workspace>` printed its banner, exited 0, and no window
+appeared. Nothing in the terminal, no log, no error.
+
+**Why it was silent:** `vitis` is a shell script whose last lines are
+
+```sh
+setsid $XILINX_VITIS/ide/electron-app/lnx64/vitis-ide --no-sandbox \
+    --log-level=debug $workspace_path > /dev/null 2>&1 &
+exit $?
+```
+
+It backgrounds the real binary, **discards stdout and stderr**, and exits with
+the status of the backgrounding — always 0. Add `docker exec -d` on top (as
+the README's launch command had) and there are two layers of detachment hiding
+the error. Run the inner binary directly to see anything at all.
+
+**First finding (real, but not the cause):** `ldd vitis-ide | grep "not found"`
+reported `libgbm.so.1` missing. The Vitis IDE in 2026.1 is an **Electron** app,
+not the Java/SWT GUI that Vivado uses, so it needs the Chromium runtime
+libraries. `libgbm1` was genuinely absent — added to the Dockerfile along with
+`libxshmfence1` and `libdrm2`. It was never caught before because every Vitis
+use in this project had been headless (`vitis -s script.py`); the GUI had
+literally never been launched.
+
+**But that did not fix it.** With the library present the IDE still dies:
+
+```
+Starting IDE and loading packages.
+Theia configuration directory file:///home/user/.Xilinx/Vitis/2026.1/.vitis
+Configuring to accept webviews on ...
+Trace/breakpoint trap        exit 133   (128 + SIGTRAP)
+```
+
+The Theia/node backend starts fine every time; the Chromium browser process
+then aborts on an internal CHECK.
+
+**Everything tried, all identical (exit 133):**
+
+| Attempt | Result |
+|---|---|
+| `--disable-gpu`, `--disable-software-rasterizer` | SIGTRAP |
+| `--use-gl=disabled`, `--use-gl=swiftshader` | SIGTRAP |
+| `LIBGL_ALWAYS_SOFTWARE=1` | SIGTRAP |
+| `--no-zygote`, `--single-process` | SIGTRAP |
+| setuid `chrome-sandbox` + real sandbox | fails earlier: namespaces not permitted in Docker |
+| **Xvfb inside the container** (`DISPLAY=:99`) | **SIGTRAP** |
+| `gdb` backtrace | impossible — Rosetta processes cannot be ptraced (`Couldn't get registers`) |
+| **QEMU instead of Rosetta** (Docker Desktop → uncheck Rosetta) | **identical SIGTRAP**, `qemu: uncaught target signal 5` |
+
+That last row is the decisive one. On a local virtual framebuffer with full
+software GLX, with XQuartz and X11 forwarding entirely out of the picture, it
+crashes exactly the same way. The `libGL error: No matching fbConfigs or
+visuals found` seen over XQuartz is a red herring — a symptom of the display
+path, not the cause of the crash.
+
+**Conclusion: Chromium does not run under user-mode x86-64 emulation on this
+machine — with either emulator.** Switching Docker Desktop from Rosetta to
+QEMU (uncheck "Use Rosetta for x86_64/amd64 emulation", keep Apple
+Virtualization framework) produced the *same* signal at the *same* point, so
+this is not a Rosetta quirk. SIGTRAP is Chromium aborting on its own
+invariant: not a missing library, not GL, not the display server, not the
+sandbox, and not the translation layer's identity. Vivado's GUI is unaffected
+because it is Java/SWT — a completely different toolkit.
+
+Note the distinction that matters for workarounds: this is *user-mode*
+emulation, where individual x86 binaries are translated. **Full-system**
+x86-64 emulation (a real x86 kernel, as in UTM) is a different mechanism and
+would run the IDE — just far too slowly to be practical for a ~100GB install.
+
+**Impact: none on coursework, so far.** Everything this project needs from
+Vitis already runs headless and is verified:
+
+- `vitis -s make-app.py` — create the platform and the application
+- `cmake --build <app>/build` — rebuild after editing C
+- `updatemem` + `openFPGALoader` — run it on the board (`tools/run-sw.sh`)
+
+What is lost is the Vitis GUI: the editor, the project wizards, and the
+graphical build/run buttons. Write C in any editor on the Mac (the files are
+bind-mounted) and build with the scripts.
+
+**Not tried:** a native x86-64 Linux or Windows machine, or the Windows-ARM VM
+already on the table for the MicroBlaze debugger (§15) — that VM would solve
+both at once, which strengthens the case for it if the GUI ever becomes a hard
+requirement.
+
+**Lesson:** a launcher script ending in `&` with `> /dev/null 2>&1` is a black
+hole — find the real executable before theorising. And when a fix looks like it
+worked, confirm the *window appeared*, not merely that a process is alive: the
+Theia backend stays running for minutes after the GUI process has died, which
+briefly looked like success here.
+
+One self-inflicted detour: checking for `libXshmfence.so.1` with a
+case-sensitive grep reported it missing when the real filename is lowercase
+`libxshmfence.so.1`. It had been installed all along.
+
+## 21. Rebuilding a Vitis app from the command line: two tools missing from PATH
+
+With the IDE unavailable (§20) the software loop has to be scriptable. Creating
+the app works — `vitis -s make-app.py` builds the platform and the application
+and prints `APP OK`. **Rebuilding** it afterwards is where it fell apart, in two
+steps.
+
+**`cmake: command not found`.** Vitis generates a CMake/Ninja tree per
+application, but `Vitis/settings64.sh` puts no `cmake` on PATH. It ships one,
+just not where you would look:
+
+```
+/opt/Xilinx/2026.1/tps/lnx64/cmake-4.0.1/bin/cmake      # not on PATH
+/opt/Xilinx/2026.1/Vitis/bin/ninja                      # on PATH
+```
+
+`make` is *not* a substitute — the generator is Ninja, so there is no Makefile
+to run. `lib.sh` now globs `tps/lnx64/cmake-*/bin/cmake` (unversioned, so a
+toolchain bump doesn't break it) and falls back to `ninja -C`.
+
+**Then `mb-size: not found`,** after a successful compile and link. The
+generated build invokes `mb-gcc` by absolute path but `mb-size` by bare name,
+and the two are in *different* trees:
+
+```
+/opt/Xilinx/2026.1/Vitis/gnu/microblaze/lin/bin/mb-gcc
+/opt/Xilinx/2026.1/gnu/microblaze/lin/bin/mb-size        # note: no Vitis/
+```
+
+Both directories now go on PATH in `build_app`.
+
+Neither problem appears on the first build, because `vitis -s` runs it inside
+the Vitis server's own fuller environment. Only standalone rebuilds hit it —
+which is exactly why it went unnoticed: **test 03 had only ever been created,
+never rebuilt**, so its `cmake --build` rebuild path had never once run despite
+the test being marked green. A test that passes without exercising its own
+documented steps is not evidence about those steps.
+
+Both fixes live in `build_app()` in `tests/common/lib.sh`, shared by
+`tools/run-sw.sh` and test 03, so any future project gets them.
+
+Verified end to end on a GUI-built project (`Test_Microblaze`): edit
+`src/main.c` → `tools/run-sw.sh -d projects/Test_Microblaze` → compile, link,
+`updatemem` merge, program. Two related generalisations were needed for
+GUI-made projects, whose names differ from the scripted ones:
+
+- the implementation directory is `<Project>.runs/impl_1` inside the project,
+  not `vivado/*.runs/impl_1` — now found by search rather than by assumption;
+- the wrapper is named after the block design (`design_1_wrapper.bit/.mmi`),
+  not `system_wrapper` — now found by globbing the `.mmi` and taking the
+  matching `.bit`. The CPU instance was already read out of the `.mmi`
+  (`design_1_i/microblaze_0`), which is why that part needed no change.
