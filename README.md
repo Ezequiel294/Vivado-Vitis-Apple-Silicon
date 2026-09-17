@@ -181,7 +181,7 @@ Facts that save real debugging time:
 | Vivado Hardware Manager over XVC | ⚠️ works, but `open_hw_target` often fails the first time — retry it |
 | **ILA / VIO on-chip debug over XVC** | ✅ **works** (verified 2026-09-08) — waveform capture and live probes |
 | Vitis builds (platform + app, `vitis -s` Python API) | ✅ works |
-| **Vitis IDE (the GUI)** | ❌ **does not start** — Electron/Chromium crashes under Rosetta |
+| **Vitis IDE (the GUI)** | ❌ **does not start** — Electron/Chromium crashes under emulation (Rosetta *and* QEMU alike) |
 | Running software on the MicroBlaze via `updatemem` boot-bitstream | ✅ works — the standard flow |
 | Serial console from macOS (`screen`, 9600) | ✅ works, both directions — output *and* typed input |
 | RESET button re-running the soft-CPU program | ✅ works |
