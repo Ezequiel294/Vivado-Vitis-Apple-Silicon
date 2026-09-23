@@ -183,28 +183,29 @@ Facts that save real debugging time:
 | Vitis builds (platform + app, `vitis -s` Python API) | ✅ works |
 | **Vitis IDE (the GUI)** | ❌ **does not start** — Electron/Chromium crashes under emulation (Rosetta *and* QEMU alike) |
 | Running software on the MicroBlaze via `updatemem` boot-bitstream | ✅ works — the standard flow |
+| Benchmarking (Dhrystone from the Vitis Examples library, `-O3`, code size) | ✅ works — scripted, no IDE (test 09) |
 | Serial console from macOS (`screen`, 9600) | ✅ works, both directions — output *and* typed input |
 | RESET button re-running the soft-CPU program | ✅ works |
 | **Interactive debug of the MicroBlaze** (breakpoints, step, `dow`/`con`, Vitis GUI "Run/Debug on Hardware") | ❌ **does not work** |
 | Booting a design from the board's QSPI flash | ❓ never attempted (test 08 — writes flash, needs a jumper) |
 
-The one broken row has a single root cause: openFPGALoader's XVC server
-mishandles the MicroBlaze Debug Module's transactions (journal §15). The
-failure is narrow — **ILA and VIO work fine over the same bridge** (journal
-§19), so on-chip debug as a whole is available; only the CPU debug module
-fails. The Vitis GUI fails identically to the command line (same
-`hw_server → XVC → MDM` path), so there is no GUI-only workaround.
+In practice this costs you one thing: **there is no breakpoint debugger.**
+Debug with `xil_printf` over the serial console, LEDs, and the RESET button to
+re-run — which is what `tools/run-sw.sh` is built around. Everything else on
+the list has a working path, and the steps below use it.
 
-Debug instead with `xil_printf` over the serial console, LEDs, and the RESET
-button to re-run — which is what `tools/run-sw.sh` is built around. If
-breakpoints ever become essential, the options are a different XVC server or a
-Windows-ARM VM with native cable drivers.
+The root cause, and what the alternatives would be, are in
+[reference.md](reference.md).
 
 ---
 
 ## Daily workflow
 
-### Start / stop
+*This section is the steps. For what the tools are actually doing, which
+alternative paths exist, and why some things are done the way they are, see
+[reference.md](reference.md).*
+
+### 1. Start a session
 
 ```sh
 open -a Docker; open -a XQuartz
@@ -218,27 +219,28 @@ license, and coursework).
 ⚠️ **If your coursework folder is in iCloud/Proton Drive/Dropbox**, force the
 files back onto local disk before a session — the container gets
 `Input/output error` on cloud-evicted placeholders and builds hang with no
-message (journal §17):
+message:
 
 ```sh
 cd "/path/to/your/fpga-work" && find . -type f -exec cat {} + > /dev/null
 ```
 
-### Launch the tools
+### 2. Build hardware in Vivado
 
 ```sh
 docker exec -d vivado bash -lc 'source /opt/Xilinx/2026.1/Vivado/settings64.sh && vivado'
-# Vitis has NO working GUI here (§7) — it is scripted instead:
-docker exec vivado bash -lc 'source /opt/Xilinx/2026.1/Vitis/settings64.sh && vitis -s <script>.py'
 ```
 
 First GUI start takes a minute or two (emulation). Work in
-`~/fpga-work/projects/<name>` — those files appear in your coursework folder
-on the Mac. Follow the class slides for the GUI flow (RTL project → add
-sources → add XDC → target board → synth → impl → bitstream), and put final
-`.bit` files in `~/fpga-work/bitstreams/` so they're easy to find from macOS.
+`~/fpga-work/projects/<name>` — those files appear in your coursework folder on
+the Mac. Follow the class slides for the GUI flow (RTL project → add sources →
+add XDC → target board → synth → impl → bitstream), and put final `.bit` files
+in `~/fpga-work/bitstreams/` so they're easy to find from macOS.
 
-### Program the board — path A (from macOS)
+> Vitis has **no working GUI** here. You do not need it — the steps below
+> replace it. See [reference.md](reference.md) for why.
+
+### 3. Program the board
 
 ```sh
 openFPGALoader --detect                                  # board visible?
@@ -246,196 +248,93 @@ openFPGALoader -b arty_a7_100t <path to .bit>            # Arty A7-100T
 openFPGALoader -b arty_s7_25   <path to .bit>            # Arty S7-25
 ```
 
-The `.bit` path is the `fpga-work/bitstreams/...` file in your coursework folder.
+The `.bit` path is the `fpga-work/bitstreams/...` file in your coursework
+folder. This is all you need for plain Verilog designs.
 
-Path A is the default and covers the everyday loop. **Path B** below routes
-JTAG through the container instead, and is needed only for ILA/VIO and
-container-side tools. Neither path compiles anything — both just load a
-bitstream Vivado already produced:
+*(There is a second path that routes JTAG through the container, needed only
+for ILA/VIO on-chip debug — see [reference.md](reference.md).)*
 
-| Step | What it means | Who does it |
-|---|---|---|
-| **Compile** | Verilog / block design → `.bit` | **Vivado only**, always in the container |
-| **Program** | send an existing `.bit` to the FPGA over JTAG | openFPGALoader on the Mac (path A) **or** xsdb / Hardware Manager over XVC (path B) |
-| **Debug** | watch the design *while it runs* — ILA, VIO | Hardware Manager over XVC (path B only) |
+### 4. Write and run C on the MicroBlaze
 
-### Path B — the XVC bridge (JTAG over TCP)
-
-The container has no USB: Docker on macOS can't pass the board's FTDI chip
-through, so Vivado inside the container cannot reach the Arty by itself.
-**XVC (Xilinx Virtual Cable)** closes that gap — openFPGALoader plays the part
-of the cable, serving JTAG over a TCP socket the container connects to.
-
-```
-Vivado / xsdb / Vitis  --TCP:2542-->  openFPGALoader --xvc  --USB-->  Arty A7-100T
-   (in container)                          (on the Mac)
-```
-
-`host.docker.internal` is how the container addresses your Mac.
-
-**Use it for on-chip debug — ILA and VIO.** That's the real reason it exists.
-An ILA records internal signals into on-chip memory and Hardware Manager reads
-them back as waveforms; a VIO gives you virtual switches and LEDs for a
-running design. openFPGALoader alone can do neither — it only pushes
-bitstreams. The bridge also lets you program from inside the container
-(Hardware Manager, or xsdb `fpga -f`) and inspect the scan chain.
-
-**Skip it for everything else.** Compiling never touches the board, and the
-everyday loop — edit Verilog, build, load the `.bit`, look at the LEDs — is
-simpler over path A.
-
-**It cannot do MicroBlaze breakpoint debugging** or Vitis "Run on Hardware"
-(§7). Use the boot-bitstream flow below instead.
-
-Three rules that save time:
-
-- **`--port 2542` is required.** openFPGALoader's XVC default is 3721; Xilinx
-  tools expect 2542.
-- **The bridge is single-client.** One of Hardware Manager *or* xsdb at a
-  time, path A can't be used while it runs, and `screen` must be closed.
-- **Retry `open_hw_target`.** The first attempt often fails with "No devices
-  detected" even though the bridge logged the connection; a retry usually
-  works. If it keeps failing, clear stale servers:
-  `docker exec vivado pkill -x hw_server`.
-
-#### Using it (two terminals)
-
-**Terminal 1 (Mac)** — start the bridge and leave it running:
-
-```sh
-openFPGALoader -b arty_a7_100t --xvc --port 2542         # Ctrl-C quits
-```
-
-**Terminal 2** — xsdb inside the container (xsdb is the JTAG console that
-ships with Vitis; 2026.1 disabled xsct, but xsdb works):
-
-```sh
-docker exec -it vivado bash -lc 'source /opt/Xilinx/2026.1/Vitis/settings64.sh && xsdb'
-```
-
-At the `xsdb%` prompt, one line at a time:
-
-```tcl
-connect -xvc-url tcp:host.docker.internal:2542    ;# reach the bridge on the Mac
-targets                                           ;# list the scan chain
-targets -set -filter {name =~ "xc7a*"}            ;# select the FPGA
-fpga -f ~/fpga-work/bitstreams/<file>.bit         ;# program it
-exit
-```
-
-`targets` should list `xc7a100t` (plus the MDM and CPU for MicroBlaze
-designs). If `connect` fails, the bridge in terminal 1 isn't running.
-
-In the GUI: Hardware Manager → Open Target → Open New Target → Local server.
-`tests/07-ila-vio/ila-check.tcl` does the same job headlessly from batch Tcl,
-including dumping an ILA capture to CSV.
-
-### Write and run C on the MicroBlaze (the Vitis IDE replacement)
-
-**The Vitis IDE does not start here** — it is an Electron app and Chromium
-crashes under emulation (§7, journal §20). That costs you the editor, the
-project wizards and the build buttons. It does **not** cost you Vitis: the
-compiler, the BSP generator and the linker are separate command-line tools
-that work fine. Vivado's GUI is unaffected, so the class flow — design the
-hardware in Vivado, write C for it in Vitis — is intact. Only the C gets
-compiled by a script instead of a button.
-
-Two scripts replace the IDE. Both live in `fpga-work/tools/`:
-
-| Script | Replaces | When |
-|---|---|---|
-| `make-app.sh` | New Platform Project + New Application Project wizards | once per project |
-| `run-sw.sh` | the Build and Run buttons | every code change |
-
-#### 1. In Vivado (GUI, exactly as the class slides describe)
-
-Build the block design, **Generate Bitstream**, then:
+**Step 1 — in Vivado**, build the block design, **Generate Bitstream**, then:
 
 > **File → Export → Export Hardware… → tick "Include bitstream"**
 
-Save the `.xsa` into the project directory. This is the handoff from hardware
-to software, and forgetting it is the most common way to get stuck.
+Save the `.xsa` into the project directory. Forgetting this is the most common
+way to get stuck.
 
-#### 2. Create the platform and application (once per project)
+**Step 2 — create the app** (once per project):
 
 ```sh
 cd ~/…/fpga-work
 ./tools/make-app.sh -d projects/<yours>
 ```
 
-This builds the BSP — the drivers and headers generated for *your* block
-design, which is how `xil_printf()` knows how to reach your UART — then
-creates the app from the `hello_world` template. Several minutes.
+Several minutes. It writes a starter `projects/<yours>/src/main.c` — **that is
+the file to edit.**
 
-It also writes a starter `projects/<yours>/src/main.c`. **That is the file to
-edit**: `run-sw.sh` copies it over the app's source on every build, so edits
-made anywhere else are silently overwritten.
-
-Useful flags: `-a <name>` for a second app against the same platform
-(default `hello`), `-c <cpu>` if the processor is not `microblaze_0`,
-`--help` for the rest.
-
-#### 3. Edit, build, run (every change)
+**Step 3 — edit, build, run** (every change):
 
 ```sh
 # edit projects/<yours>/src/main.c in any editor on the Mac
 ./tools/run-sw.sh -d projects/<yours>
-screen /dev/cu.usbserial-*1 9600        # press RESET on the board
+./tools/serial.sh                          # then press RESET on the board
 ```
 
-`run-sw.sh` recompiles the C, bakes the ELF into the bitstream with
-`updatemem`, and programs the board. The baking step is needed because Vitis
-"Run on Hardware" cannot work over the XVC bridge (§7): a bitstream configures
-*hardware*, while your program lives in the CPU's BRAM, so the two are merged
-before download. The program then starts at power-on and the RESET button
-re-runs it.
+#### Using a Vitis example instead of your own code
 
-Both scripts find things rather than assuming names, so they work with
-GUI-made projects (`design_1_wrapper.bit`, `<Project>.runs/impl_1`) as well as
-the scripted tests (`system_wrapper.bit`, `vivado/…`).
-
-The underlying command, if you want to run it by hand:
+Some assignments hand you the program (Dhrystone, for instance). Name it with
+`-t` instead of writing a `main.c`:
 
 ```sh
-updatemem -meminfo <impl>/<top>_wrapper.mmi -data <app>.elf \
-  -bit <impl>/<top>_wrapper.bit -proc <design>_i/microblaze_0 -out boot.bit
+./tools/make-app.sh -d projects/<yours> -a dhry -t dhrystone
 ```
 
-Debug with `xil_printf` over the serial console, plus LEDs — there is no
-breakpoint debugger (§7).
+#### Compiler flags an assignment asks for
+
+"Compile it with `-O3` and no debug" becomes:
+
+```sh
+./tools/make-app.sh -d projects/<yours> -a dhry -t dhrystone -O -O3 -g none
+```
+
+`-O` takes `-O0`/`-O1`/`-O2`/`-O3`/`-Os`; `-g` takes `-g1`/`-g2`/`-g3` or
+`none`. Run it again on an existing app to change the setting and rebuild.
+
+#### Other flags
+
+`-a <name>` for a second app against the same platform (default `hello`),
+`-c <cpu>` if the processor is not `microblaze_0`. `--help` prints the rest.
 
 ### Serial console
 
 ```sh
-screen /dev/cu.usbserial-*1 9600           # exit: Ctrl-A then K, then y
+./tools/serial.sh                          # watch, log to serial.log, Ctrl-C to stop
+./tools/serial.sh -o dhry.log -t 60        # 60 seconds, to a log you name
+./tools/serial.sh -u "run successfully"    # stop when that text appears
+```
+
+`serial.sh` only listens. When the program expects you to **type**, use
+`screen` instead:
+
+```sh
+screen /dev/cu.usbserial-*1 9600           # exit: Ctrl-A + K, then y
 ```
 
 - Use the **`cu.`** device — `screen` on the `tty.` variant exits after a few
   seconds, waiting for a carrier that never comes.
 - Use the **`1`**-suffixed device — channel B is the UART, channel A is JTAG.
-- **9600 baud** is the AXI Uartlite automation default (set
-  `CONFIG.C_BAUDRATE {115200}` on the IP before building for faster). Junk
-  characters mean a baud mismatch — usually the 115200 factory demo after a
-  power-up.
+- **9600 baud.** Junk characters mean a baud mismatch — usually the 115200
+  factory demo after a power-up.
 - Output printed while JTAG is programming can arrive truncated; press RESET
   for a clean run.
-
-### Batch builds (no GUI)
-
-```sh
-docker exec -w /home/user/fpga-work/tests/01-leds vivado bash -lc \
-  'source /opt/Xilinx/2026.1/Vivado/settings64.sh && vivado -mode batch -source build.tcl'
-```
-
-Every test in `fpga-work/tests/` is a worked reference to copy from:
-`01-leds/build.tcl` (plain Verilog), `03-mb-hello/build-hw.tcl` (a MicroBlaze
-block design), `07-ila-vio/build.tcl` (debug cores).
+- If `screen` stair-steps the output down the screen, that is the program's
+  line endings, not a fault — use `serial.sh`.
 
 ### The test suite
 
-Eight tests covering everything this environment can do, each with a README
-saying what it proves and how to check it. Use them to verify the environment
-after any change, and as working examples.
+Nine tests that verify everything this environment can do, each with a README
+saying what it proves and how to check it.
 
 > **⚠️ Copy `tests/` and `tools/` into your coursework folder first — they do
 > not run from this repo.**
@@ -445,47 +344,30 @@ after any change, and as working examples.
 > cd "/path/to/your/fpga-work/tests" && ./run-all.sh
 > ```
 >
-> Only `fpga-work` is bind-mounted, so the container cannot see this repo at
-> all. `tests/common/lib.sh` derives container paths by stripping the
-> `fpga-work` root off host paths; run from anywhere else and every
-> `docker exec` targets a path that does not exist. Copy **both** directories —
-> `tools/run-sw.sh` sources `../tests/common/lib.sh`.
+> Re-copy after pulling repo updates — the copies in `fpga-work/` are what
+> actually run.
 
-Status as of 2026-09-08: **01–07 pass, 08 (flash boot) not yet run.** Details
-and per-test pass criteria are in `tests/README.md`.
-
-The copy here is **sources only** — build outputs (`vivado/`, `vitis/`,
-`.bit`, `.xsa`, `.ltx`, logs) are gitignored, so a fresh copy rebuilds from
-scratch. Test 03 takes 20+ minutes the first time; the rest are minutes.
+Status: **01–07 and 09 pass**; 08 (flash boot) not yet run. Per-test detail is
+in `tests/README.md`; why two tests are excluded from `run-all.sh` is in
+[reference.md](reference.md).
 
 ### Helper scripts (`tools/`)
 
-Copied to `fpga-work/tools/` by the same command above:
-
 | Script | What it is for |
 |---|---|
-| `make-app.sh` | create a Vitis platform + app for a project — replaces the IDE's wizards, run once per project |
-| `make-app.py` | the part that runs inside the container (invoked by `make-app.sh`, not directly) |
-| `run-sw.sh` | rebuild C → bake the ELF into the bitstream → program the board; the everyday loop |
+| `make-app.sh` | create a Vitis platform + app for a project — run once per project |
+| `run-sw.sh` | rebuild C → bake into the bitstream → program the board; the everyday loop |
+| `serial.sh` | watch the serial console and save a transcript |
+| `make-app.py` | runs inside the container (invoked by `make-app.sh`, not directly) |
 
-`--help` on either shell script prints its usage. Full workflow:
-[Write and run C on the MicroBlaze](#write-and-run-c-on-the-microblaze-the-vitis-ide-replacement).
-
-**After pulling repo updates, re-copy both directories** — the copies in
-`fpga-work/` are what actually run, and they do not update themselves:
-
-```sh
-cp -R tests tools "/path/to/your/fpga-work/"
-```
-
----
+`--help` on any of the shell scripts prints its usage.
 
 ## Troubleshooting
 
 **`vitis -w …` opens nothing and exits 0** — expected: the Vitis IDE cannot
 run here (§7, journal §20). Its launcher backgrounds the real binary with
 output discarded, so the crash is invisible. Use the scripted flow instead:
-[Write and run C on the MicroBlaze](#write-and-run-c-on-the-microblaze-the-vitis-ide-replacement).
+[Write and run C on the MicroBlaze](#4-write-and-run-c-on-the-microblaze).
 
 **`cmake: command not found` when rebuilding an app** — `settings64.sh` does
 not put `cmake` on PATH; it ships under `tps/lnx64/cmake-*/bin/`. `make` is

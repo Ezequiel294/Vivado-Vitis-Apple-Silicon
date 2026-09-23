@@ -709,3 +709,124 @@ GUI-made projects, whose names differ from the scripted ones:
   not `system_wrapper` — now found by globbing the `.mmi` and taking the
   matching `.bit`. The CPU instance was already read out of the `.mmi`
   (`design_1_i/microblaze_0`), which is why that part needed no change.
+
+## 22. Benchmarking without the IDE: the template library is reachable from the CLI
+
+Unit 6 and Homework 2 need the Dhrystone benchmark, which the course slides
+reach through the Vitis IDE's Examples library — the one part of the IDE we had
+not tried to replace, because nothing had needed it. The question was whether
+the IDE-free flow could do benchmarking at all, and the answer turned out to be
+yes, with more of the work already done than expected.
+
+**The examples are templates, and templates are a CLI argument.**
+`client.get_templates(type='EMBD_APP')` lists 35 of them on this install, with
+`dhrystone` among them; `create_app_component(template=...)` instantiates one.
+So "pick it from the Examples library" is a string parameter, not a GUI
+capability. `tools/make-app.sh -t <name>` now exposes it.
+
+**Build → Settings is `set_app_config`.** AMD's own docstrings use the two keys
+the assignment names as their examples:
+
+```python
+component.set_app_config(key="USER_COMPILE_OPTIMIZATION_LEVEL", values="-O3")
+component.set_app_config(key="USER_COMPILE_DEBUG_LEVEL", values="-g1")
+```
+
+Values land in the app's `UserConfig.cmake` and survive rebuilds. Two
+wrinkles: `get_app_config` returns a *list*, and it quotes what it stored, so a
+level set to `-O3` reads back as `['"-O3"']`. Comparing the raw return value
+against `-O3` always reports a change, which made "settings already as
+requested" impossible to detect until both were handled.
+
+**Code size was already there.** Every app's generated `CMakeLists.txt` ends
+with `print_elf_size(CMAKE_SIZE …)`, which runs `mb-size` and prints the
+`text data bss dec hex` line. That is exactly the figure Homework 2 asks you to
+collect from the compilation log — and it is the same `mb-size` whose absence
+from PATH broke rebuilds in §21. A fix made for an unrelated reason turned out
+to be the thing that delivers a graded deliverable.
+
+**What the template brings with it.** `dhrystone` is not a single file: it
+ships `dhry_1.c`, `dhry_2.c` and `platform.c`, pulls in the `xiltimer` BSP
+library, and sets its own linker constraints (`stack 16k heap 16k`). The old
+`make-app.py` unconditionally replaced the template's source with the project's
+`main.c` — correct for `hello_world`, destructive for anything else. Both
+scripts now decide by a single fact with no new state to keep straight: **the
+app's sources are ours to sync only if the app has a `main.c` of its own.**
+`hello_world` apps do, because we put one there; template apps do not.
+
+**Templates state their hardware requirements, and enforce them.**
+`dhrystone.tcl` refuses to instantiate without a UART, an AXI Timer and
+`0x7800` bytes of memory. This is a real error path, not a theoretical one —
+the `Test_Microblaze` project has a timer but too little local memory, and
+failed with exactly that message. Creation leaves a partial app directory
+behind when it fails, which would make the next run think the app exists;
+`make-app.py` now removes it and re-raises with the template named.
+
+**Two Vivado API details cost a build cycle each** while writing test 09's
+guards:
+
+- `get_bd_addr_segs -of_objects <the timer cell>` returns the timer's *own*
+  slave segment, which exists whether or not the CPU can reach it. The question
+  "is it mapped?" has to be asked of the processor: walk
+  `get_bd_addr_segs microblaze_0/Data/*` and look for the timer there.
+- A segment's `RANGE` property is a hex byte count (`0x00020000`), not the
+  `128K` string the GUI displays. Comparing against `"128K"` fails on a design
+  that is entirely correct.
+
+Both guards exist because the mistakes they catch produce *plausible* results
+rather than obvious failures: an unmapped timer makes Dhrystone read a constant
+and report an absurd score, and a wrong processor clock skews DMIPS/MHz while
+everything still runs.
+
+**The serial transcript needed work too.** Dhrystone ends its result lines with
+a bare `LF`, which stair-steps across a terminal — the same problem the slides
+solve by setting TeraTerm's "Receive new-line" to LF. `capture_serial` in
+`lib.sh` writes the raw bytes to a log and echoes a CR-inserted copy to the
+screen, with a timeout and a stop-on-pattern so a test can check the result by
+machine instead of by eye. It is read-only; `screen` is still the way to type
+at a program. It returns non-zero on timeout, so callers under `set -e` must
+use it as a condition.
+
+**`updatemem` handles a 128 kB local memory.** This was the one genuinely
+unproven step — every bake before this used the default small memory, and a
+silent no-op at the larger size would have produced a board that sits there
+doing nothing. It works: test 09 passed first time on 2026-09-21 at 50,403
+Dhrystones/second and 0.2869 DMIPS/MHz, with the boot bitstream differing from
+the plain one and every `should be:` value in Dhrystone's self-check matching.
+The course slides report 37,764 Dhrystones/second for their own build, so the
+result is in the right range — the slides note their figure is well below the
+published MicroBlaze benchmarks and that they will keep hunting for the reason
+through the semester.
+
+The Dhrystone code size at `-O3` with no debug, for reference:
+
+```
+   text	   data	    bss	    dec	    hex	filename
+  23740	    416	  13820	  37976	   9458	dhry.elf
+```
+
+**A library is not a user interface.** The first thing the serial helper was
+used for by hand, it closed the terminal. `capture_serial` lives in
+`tests/common/lib.sh`, and the README told the user to `source` that file at
+their prompt — which does two fatal things at once. `lib.sh` reads
+`BASH_SOURCE[0]`, unset in zsh, so `FPGA_WORK` silently resolves to the wrong
+directory; and it runs `set -euo pipefail`, which in an *interactive* shell
+means the next non-zero return closes the window. `capture_serial` returns
+non-zero on timeout by design, so the crash was guaranteed the moment anyone
+followed the instructions.
+
+Both faults were visible in this session before the user hit them — the
+`BASH_SOURCE` warning appeared in my own ad-hoc testing and I read past it,
+and I had already worked around the `set -e` behaviour by wrapping calls in
+`if` without asking why a user would have to. Testing a helper only from
+inside `bash -c` proves it works for tests, not for people.
+
+Fixed in two parts: `lib.sh` now refuses to load under anything but bash, with
+a message naming the script to use instead, placed *before* `set -e` can arm
+itself; and `tools/serial.sh` is a real command with `--help`, an open-ended
+default (Ctrl-C to stop), `-t` for a time limit and `-u` to stop on a string.
+`capture_serial` gained a no-timeout mode for it.
+
+**None of this touches the broken debugger.** Benchmarking needs no
+breakpoints, no stepping and no `dow` — Dhrystone prints and exits. §15's
+limitation is untouched and test 06 still owns it.
