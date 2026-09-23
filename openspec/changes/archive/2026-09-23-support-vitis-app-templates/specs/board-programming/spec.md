@@ -1,17 +1,4 @@
-# board-programming Specification
-
-## Purpose
-Connects the Arty FPGA board (A7-100T or S7-25) on the Mac's USB port to the toolchain: JTAG access for Vivado/Vitis running inside the container, direct bitstream programming from the host, and a serial console for programs running on the soft CPU.
-
-## Requirements
-
-### Requirement: Bitstream can be programmed from the host
-
-A bitstream generated inside the container SHALL be programmable onto the Arty board directly from macOS, without any container involvement, as the baseline programming path.
-
-#### Scenario: Direct programming
-- **WHEN** the board is connected via USB and the user runs the host-side programming tool against a `.bit` file from the coursework directory
-- **THEN** the FPGA is configured and the design runs on the board (e.g. the Unit 2 LED example responds to switches)
+## MODIFIED Requirements
 
 ### Requirement: Container tools reach the board over JTAG
 
@@ -54,4 +41,3 @@ Output printed by programs running on the board's soft CPU over the USB UART SHA
 #### Scenario: Capturing a transcript
 - **WHEN** the user wants a record of what a program printed
 - **THEN** the documented tooling writes the output to a file as well as showing it, and the file holds the text the program actually sent
-
