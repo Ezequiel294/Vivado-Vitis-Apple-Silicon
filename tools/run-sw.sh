@@ -18,7 +18,9 @@
 # Layout it expects inside the project directory:
 #   <dir>/**/*.runs/impl_1/<top>_wrapper.{bit,mmi}   (any wrapper name)
 #   <dir>/vitis/<app>/build/<app>.elf
-#   <dir>/src/main.c            (optional; copied over the app's source)
+#   <dir>/src/main.c            (optional; copied over the app's source, but
+#                                only for apps that have a main.c of their own
+#                                — template apps keep the sources they ship)
 #
 source "$(dirname "${BASH_SOURCE[0]}")/../tests/common/lib.sh"
 
@@ -61,8 +63,11 @@ if [ "$DO_BUILD" = 1 ]; then
     step "Building $APP"
     [ -d "$APP_DIR/build" ] || die "no build tree at $APP_DIR/build
 (first time? create the app with: vitis -s <your make-app.py>)"
-    # Keep the app's source in sync with the project's canonical main.c.
-    if [ -f "$PROJ_DIR/src/main.c" ]; then
+    # Keep the app's source in sync with the project's canonical main.c —
+    # but only for apps that have a main.c of their own. An app made from a
+    # template such as dhrystone ships dhry_1.c, dhry_2.c and platform.c and
+    # no main.c; dropping ours in would add a second main() and break it.
+    if [ -f "$APP_DIR/src/main.c" ] && [ -f "$PROJ_DIR/src/main.c" ]; then
         cp "$PROJ_DIR/src/main.c" "$APP_DIR/src/main.c"
     fi
     build_app "$APP_DIR/build"
