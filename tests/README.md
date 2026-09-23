@@ -1,8 +1,8 @@
 # Arty A7-100T test suite
 
-Eight tests that between them exercise everything this environment can do —
+Nine tests that between them exercise everything this environment can do —
 Vivado, Vitis, the simulator, both programming paths, the serial console in
-both directions, the on-chip debug cores, and flash boot.
+both directions, the on-chip debug cores, flash boot, and benchmarking.
 
 The point is to **see with your own eyes** that each piece works, and to keep
 an honest record of the one that doesn't (06, MicroBlaze debug) and the one
@@ -35,6 +35,7 @@ them again.
 | 06 | [mb-debug](06-mb-debug/) | MicroBlaze interactive debug | yes | ✅ expected-fail reproduced (2026-09-08, oFL v1.1.1, 0/3) |
 | 07 | [ila-vio](07-ila-vio/) | ILA/VIO on-chip debug | yes | ✅ **PASS** (2026-09-08) — ILA + VIO both work over XVC |
 | 08 | [flash-boot](08-flash-boot/) | design survives a power cycle | yes | ⬜ not run — ⚠️ writes flash |
+| 09 | [dhrystone](09-dhrystone/) | benchmarking: template app, `-O3`, 128 kB `updatemem` | yes | ✅ pass (2026-09-21, 50,403 Dhrystones/s) |
 
 Legend: ⬜ not run · ✅ pass · ❌ fail · ⚠️ partial
 
@@ -63,12 +64,13 @@ outputs:
 01 leds ──┬─→ 05 xvc-program ──→ 07 ila-vio
           └─→ 08 flash-boot
 02 simulation   (independent, no board)
-03 mb-hello ──→ 04 serial-input (independent design, same serial setup)
-          └───→ 06 mb-debug
+03 mb-hello ──┬─→ 04 serial-input (independent design, same serial setup)
+          ├───→ 06 mb-debug
+          └───→ 09 dhrystone    (independent design, much larger memory)
 ```
 
-Test 03 takes 20+ minutes on the first run — the MicroBlaze block design is
-the slowest build in the suite. Everything else is minutes.
+Tests 03 and 09 take 20+ minutes on the first run — the MicroBlaze block
+designs are the slowest builds in the suite. Everything else is minutes.
 
 ## Running them
 
@@ -103,6 +105,10 @@ running anything. General rules:
   works now (update the docs), 1 = couldn't run.
 - **Never run test 08 unattended.** It writes persistent flash and needs a
   jumper moved by hand. It refuses under `-y` by design.
+- **Test 09 is fully machine-checkable but slow.** It is left out of
+  `run-all.sh` for its runtime, not for any hazard: its result is a number
+  read off the serial port, which `run.sh` checks itself. Run it on its own
+  when you need it, and use `--no-hw` to skip the Vivado rebuild.
 - **Don't edit a test to make it pass.** 02's adder is known correct and 06 is
   supposed to fail; a green result obtained by changing the test is worthless.
 - Tests 05, 06 and 07 need the XVC bridge, which is single-client. `lib.sh`

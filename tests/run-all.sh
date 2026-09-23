@@ -6,6 +6,10 @@
 #
 # Test 08 is excluded: it writes persistent flash and needs a jumper moved by
 # hand, so it is always run deliberately and on its own.
+#
+# Test 09 is excluded for its runtime: a second 20+ minute MicroBlaze build on
+# top of test 03's. It is safe and self-checking — run it directly when you
+# want it, with --no-hw to reuse the bitstream.
 source "$(dirname "${BASH_SOURCE[0]}")/common/lib.sh"
 
 YES=""
@@ -42,6 +46,7 @@ printf '\n\033[1m########## SUMMARY ##########\033[0m\n'
 for r in "${RESULTS[@]}"; do echo "  $r"; done
 echo
 echo "  08-flash-boot: not run (writes flash — run it by hand)"
+echo "  09-dhrystone:  not run (20+ min build — run it by hand)"
 
 if [ "$YES" = "-y" ]; then
     echo
