@@ -2,6 +2,18 @@
 #
 # Everything that compiles runs inside the `vivado` container; everything that
 # touches the USB cable runs here on macOS. These helpers hide that split.
+#
+# This is a library for SCRIPTS, not for your interactive shell. Sourcing it at
+# a prompt arms `set -euo pipefail` in that shell, so the next command that
+# returns non-zero closes your terminal. To watch the serial port by hand, run
+# `tools/serial.sh` instead.
+
+if [ -z "${BASH_VERSION:-}" ]; then
+    echo "lib.sh needs bash (it uses BASH_SOURCE and bash's set -o pipefail)." >&2
+    echo "Your shell is ${SHELL:-not bash}. To watch the serial port, run:" >&2
+    echo "    ./tools/serial.sh" >&2
+    return 1 2>/dev/null || exit 1
+fi
 
 set -euo pipefail
 
@@ -136,6 +148,72 @@ program() {
     [ -f "$bit" ] || die "no bitstream at $bit — build the test first"
     require_board
     openFPGALoader -b "$BOARD" "$bit"
+}
+
+# --- serial -------------------------------------------------------------
+# Channel B of the board's FT2232 is the UART; channel A is JTAG. Both live on
+# one cable, and traffic on A costs bytes on B, so never capture while
+# programming — program first, then capture.
+SERIAL_BAUD=9600
+
+serial_port() {
+    local port
+    port=$(ls /dev/cu.usbserial-*1 2>/dev/null | head -1)
+    [ -n "$port" ] || die "no serial port — looked for /dev/cu.usbserial-*1 (channel B).
+Is the board plugged in? Note it is cu.*, not tty.*, and the port ending in 1, not 0."
+    echo "$port"
+}
+
+# capture_serial <logfile> [seconds] [stop-pattern]
+#
+# Reads the board's UART, writes exactly what it sent to <logfile>, and echoes
+# a copy to the terminal with carriage returns added so output that ends its
+# lines with a bare LF does not stair-step down the screen. This is the macOS
+# equivalent of setting TeraTerm's "Receive new-line" to LF.
+#
+# With a stop-pattern: returns 0 as soon as it appears, 1 if the time runs out
+# first. Without one: captures for the whole duration and returns 0.
+# A duration of 0 means no time limit — run until the pattern appears, or
+# until Ctrl-C.
+#
+# Read-only — it cannot send input. Use `screen` when the program expects you
+# to type.
+#
+# Returns non-zero on timeout, so under `set -e` call it as a condition:
+#   if capture_serial "$log" 60 "done"; then ... else ... fi
+capture_serial() {
+    local log=$1 secs=${2:-30} pattern=${3:-}
+    local port; port=$(serial_port)
+    : >"$log"
+    stty -f "$port" "$SERIAL_BAUD" raw -echo 2>/dev/null \
+        || die "could not configure $port — is screen or another reader holding it?"
+    if [ "$secs" -gt 0 ]; then
+        info "capturing $port at $SERIAL_BAUD for up to ${secs}s -> $log"
+    else
+        info "capturing $port at $SERIAL_BAUD -> $log   (Ctrl-C to stop)"
+    fi
+    perl -e '
+        my ($port, $log, $secs, $pat) = @ARGV;
+        open(my $fh,  "<", $port) or die "cannot read $port: $!\n";
+        open(my $out, ">", $log)  or die "cannot write $log: $!\n";
+        $| = 1; select((select($out), $| = 1)[0]);
+        my $found = 0;
+        my $tail  = "";
+        eval {
+            local $SIG{ALRM} = sub { die "timeout\n" };
+            alarm $secs if $secs > 0;
+            while (sysread($fh, my $buf, 256)) {
+                print $out $buf;                        # raw, byte for byte
+                (my $shown = $buf) =~ s/\r?\n/\r\n/g;   # legible on a terminal
+                print STDOUT $shown;
+                next if $pat eq "";
+                $tail = substr($tail . $buf, -4096);
+                if (index($tail, $pat) >= 0) { $found = 1; last; }
+            }
+            alarm 0;
+        };
+        exit(($pat eq "" || $found) ? 0 : 1);
+    ' "$port" "$log" "$secs" "$pattern"
 }
 
 # --- XVC bridge ---------------------------------------------------------
